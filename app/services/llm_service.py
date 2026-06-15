@@ -1,15 +1,19 @@
 import json
+import logging
 from functools import lru_cache
 from typing import Any, Optional
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 
 from app.core.config import get_settings
 from app.schemas.chat import ChatRequest, ChatResponse, ToolCallResult
+from app.services.errors import ServiceUnavailableError
 from app.services.mcp_registry import MCPRegistry, get_mcp_registry
 from app.services.openai_client import build_openai_client
 from app.services.tool_planner import ToolPlanner, get_tool_planner
 from app.tools.registry import ToolRegistry, get_tool_registry
+
+logger = logging.getLogger(__name__)
 
 
 class LLMService:
@@ -26,40 +30,61 @@ class LLMService:
         self.tool_planner = tool_planner or get_tool_planner()
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
-        client = self._client()
-        if request.use_tools:
-            tool_response = await self._try_planned_tool_calls(client, request)
-            if tool_response is not None:
-                return tool_response
+        try:
+            client = self._client()
+            if request.use_tools:
+                tool_response = await self._try_planned_tool_calls(client, request)
+                if tool_response is not None:
+                    return tool_response
 
-        messages = self._build_messages(request)
-        response = await client.chat.completions.create(
-            model=self.settings.openai_model,
-            messages=messages,
-            temperature=self.settings.llm_temperature,
-        )
-        message = response.choices[0].message
+            messages = self._build_messages(request)
+            response = await client.chat.completions.create(
+                model=self.settings.openai_model,
+                messages=messages,
+                temperature=self.settings.llm_temperature,
+                timeout=30,
+            )
+            message = response.choices[0].message
 
-        return ChatResponse(
-            message=message.content or "",
-            model=self.settings.openai_model,
-            tool_calls=[],
-        )
+            return ChatResponse(
+                message=message.content or "",
+                model=self.settings.openai_model,
+                tool_calls=[],
+            )
+        except ServiceUnavailableError:
+            raise
+        except (OpenAIError, TimeoutError) as exc:
+            logger.exception("LLM dependency request failed")
+            raise ServiceUnavailableError(
+                "LLM service is temporarily unavailable",
+                exc,
+            ) from exc
+        except Exception as exc:
+            logger.exception("Unexpected chat service failure")
+            raise ServiceUnavailableError("Chat service failed unexpectedly", exc) from exc
 
     async def _try_planned_tool_calls(
         self,
         client: AsyncOpenAI,
         request: ChatRequest,
     ) -> Optional[ChatResponse]:
-        tool_catalog = await self._tool_catalog()
-        allowed_tool_ids = {tool["id"] for tool in tool_catalog}
-        tool_plan = await self.tool_planner.plan(
-            client=client,
-            model=self.settings.openai_model,
-            message=request.message,
-            history=request.history,
-            tool_catalog=tool_catalog,
-        )
+        try:
+            tool_catalog = await self._tool_catalog()
+            allowed_tool_ids = {tool["id"] for tool in tool_catalog}
+            tool_plan = await self.tool_planner.plan(
+                client=client,
+                model=self.settings.openai_model,
+                message=request.message,
+                history=request.history,
+                tool_catalog=tool_catalog,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Tool planning failed; falling back to plain chat",
+                exc_info=True,
+            )
+            return None
+
         tool_plan = [
             tool_call for tool_call in tool_plan if tool_call.tool_id in allowed_tool_ids
         ]
@@ -71,7 +96,14 @@ class LLMService:
 
         for tool_call in tool_plan:
             arguments = self._resolve_arguments(tool_call.arguments, last_result)
-            result = await self._call_tool(tool_call.tool_id, arguments)
+            try:
+                result = await self._call_tool(tool_call.tool_id, arguments)
+            except Exception as exc:
+                logger.exception("Tool call failed")
+                raise ServiceUnavailableError(
+                    f"Tool call failed: {tool_call.name}",
+                    exc,
+                ) from exc
             last_result = result
             tool_call_results.append(
                 ToolCallResult(
@@ -82,7 +114,11 @@ class LLMService:
             )
 
         return ChatResponse(
-            message=await self._summarize_tool_results(client, request, tool_call_results),
+            message=await self._safe_summarize_tool_results(
+                client,
+                request,
+                tool_call_results,
+            ),
             model=self.settings.openai_model,
             tool_calls=tool_call_results,
         )
@@ -175,8 +211,27 @@ class LLMService:
                 },
             ],
             temperature=self.settings.llm_temperature,
+            timeout=30,
         )
         return response.choices[0].message.content or ""
+
+    async def _safe_summarize_tool_results(
+        self,
+        client: AsyncOpenAI,
+        request: ChatRequest,
+        tool_call_results: list[ToolCallResult],
+    ) -> str:
+        try:
+            return await self._summarize_tool_results(client, request, tool_call_results)
+        except Exception:
+            logger.warning(
+                "Tool result summarization failed; returning raw result",
+                exc_info=True,
+            )
+            return json.dumps(
+                [result.model_dump() for result in tool_call_results],
+                ensure_ascii=False,
+            )
 
     def _normalize_mcp_result(self, result: dict[str, Any]) -> dict[str, Any]:
         content = result.get("content") or []

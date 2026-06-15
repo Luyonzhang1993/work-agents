@@ -37,6 +37,7 @@ class ToolPlanner:
                 {"role": "user", "content": message},
             ],
             temperature=0,
+            timeout=30,
         )
         content = response.choices[0].message.content or ""
         return self._parse_plan(content)

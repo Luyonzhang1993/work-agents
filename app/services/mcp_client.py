@@ -11,18 +11,19 @@ class MCPError(RuntimeError):
 
 
 class MCPStdioClient:
-    def __init__(self, module: str) -> None:
+    def __init__(self, module: str, timeout: float = 10) -> None:
         self.module = module
+        self.timeout = timeout
         self._request_ids = count(1)
 
     async def list_tools(self) -> list[dict[str, Any]]:
-        async with _MCPProcess(self.module) as process:
+        async with _MCPProcess(self.module, self.timeout) as process:
             await process.initialize(next(self._request_ids))
             response = await process.request(next(self._request_ids), "tools/list")
             return response.get("tools", [])
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        async with _MCPProcess(self.module) as process:
+        async with _MCPProcess(self.module, self.timeout) as process:
             await process.initialize(next(self._request_ids))
             response = await process.request(
                 next(self._request_ids),
@@ -33,19 +34,26 @@ class MCPStdioClient:
 
 
 class _MCPProcess:
-    def __init__(self, module: str) -> None:
+    def __init__(self, module: str, timeout: float) -> None:
         self.module = module
+        self.timeout = timeout
         self.process: Optional[asyncio.subprocess.Process] = None
 
     async def __aenter__(self) -> "_MCPProcess":
-        self.process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            self.module,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            self.process = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-m",
+                    self.module,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                ),
+                timeout=self.timeout,
+            )
+        except Exception as exc:
+            raise MCPError(f"Failed to start MCP process: {self.module}") from exc
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
@@ -60,14 +68,17 @@ class _MCPProcess:
             await self.process.wait()
 
     async def initialize(self, request_id: int) -> None:
-        await self.request(
-            request_id,
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "work-agents", "version": "0.1.0"},
-            },
+        await asyncio.wait_for(
+            self.request(
+                request_id,
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "work-agents", "version": "0.1.0"},
+                },
+            ),
+            timeout=self.timeout,
         )
         await self.notify("notifications/initialized")
 
@@ -77,15 +88,24 @@ class _MCPProcess:
         method: str,
         params: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        await self.write_message(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": method,
-                "params": params or {},
-            }
-        )
-        response = await self.read_message()
+        try:
+            await asyncio.wait_for(
+                self.write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": method,
+                        "params": params or {},
+                    }
+                ),
+                timeout=self.timeout,
+            )
+            response = await asyncio.wait_for(
+                self.read_message(),
+                timeout=self.timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise MCPError(f"MCP request timed out: {method}") from exc
         if "error" in response:
             error = response["error"]
             raise MCPError(error.get("message", "MCP request failed"))
