@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.routes import chat, health, mcp
+from app.api.routes import chat, health, mcp, workflows
 from app.core.config import get_settings
 
 
@@ -14,6 +14,7 @@ def create_app() -> FastAPI:
     application.include_router(health.router)
     application.include_router(chat.router, prefix="/api")
     application.include_router(mcp.router, prefix="/api")
+    application.include_router(workflows.router, prefix="/api")
     return application
 
 

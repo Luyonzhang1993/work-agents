@@ -50,6 +50,8 @@ class ToolPlanner:
             '{"tool_calls":[{"tool":"tool_id","arguments":{}}]}. '
             "If no tool is needed, return {\"tool_calls\":[]}. "
             "For multi-step requests, include calls in execution order. "
+            "If one workflow tool matches the whole user request, prefer that "
+            "workflow over planning its internal tools one by one. "
             "If a later call needs the previous tool result, use the string "
             '"__previous_result__" as that argument value. '
             "Only use the exact tool id values from this catalog:\n"

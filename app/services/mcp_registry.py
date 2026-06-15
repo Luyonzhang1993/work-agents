@@ -66,6 +66,10 @@ def get_mcp_registry() -> MCPRegistry:
             MCPServiceDefinition(
                 name="arithmetic",
                 module="app.mcp_server.arithmetic",
+            ),
+            MCPServiceDefinition(
+                name="finance",
+                module="app.mcp_server.finance",
             )
         ]
     )

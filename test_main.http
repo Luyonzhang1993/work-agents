@@ -39,3 +39,29 @@ Accept: application/json
 }
 
 ###
+
+GET http://127.0.0.1:8001/api/workflows/finance-report
+Accept: application/json
+
+###
+
+POST http://127.0.0.1:8001/api/workflows/finance-report/run
+Content-Type: application/json
+Accept: application/json
+
+{
+  "symbol": "AMD"
+}
+
+###
+
+POST http://127.0.0.1:8001/api/chat
+Content-Type: application/json
+Accept: application/json
+
+{
+  "message": "请运行 AMD 金融报告 workflow，并告诉我结果",
+  "use_tools": true
+}
+
+###

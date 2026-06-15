@@ -7,10 +7,12 @@ from openai import AsyncOpenAI, OpenAIError
 
 from app.core.config import get_settings
 from app.schemas.chat import ChatRequest, ChatResponse, ToolCallResult
+from app.schemas.workflow import WorkflowRunRequest
 from app.services.errors import ServiceUnavailableError
 from app.services.mcp_registry import MCPRegistry, get_mcp_registry
 from app.services.openai_client import build_openai_client
 from app.services.tool_planner import ToolPlanner, get_tool_planner
+from app.services.workflow_service import WorkflowService, get_workflow_service
 from app.tools.registry import ToolRegistry, get_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -21,12 +23,14 @@ class LLMService:
         self,
         tool_registry: Optional[ToolRegistry] = None,
         mcp_registry: Optional[MCPRegistry] = None,
+        workflow_service: Optional[WorkflowService] = None,
         tool_planner: Optional[ToolPlanner] = None,
     ) -> None:
         self.settings = get_settings()
         self.client: Optional[AsyncOpenAI] = None
         self.tool_registry = tool_registry or get_tool_registry()
         self.mcp_registry = mcp_registry or get_mcp_registry()
+        self.workflow_service = workflow_service or get_workflow_service()
         self.tool_planner = tool_planner or get_tool_planner()
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
@@ -61,7 +65,10 @@ class LLMService:
             ) from exc
         except Exception as exc:
             logger.exception("Unexpected chat service failure")
-            raise ServiceUnavailableError("Chat service failed unexpectedly", exc) from exc
+            raise ServiceUnavailableError(
+                "Chat service failed unexpectedly",
+                exc,
+            ) from exc
 
     async def _try_planned_tool_calls(
         self,
@@ -86,7 +93,9 @@ class LLMService:
             return None
 
         tool_plan = [
-            tool_call for tool_call in tool_plan if tool_call.tool_id in allowed_tool_ids
+            tool_call
+            for tool_call in tool_plan
+            if tool_call.tool_id in allowed_tool_ids
         ]
         if not tool_plan:
             return None
@@ -100,10 +109,12 @@ class LLMService:
                 result = await self._call_tool(tool_call.tool_id, arguments)
             except Exception as exc:
                 logger.exception("Tool call failed")
-                raise ServiceUnavailableError(
-                    f"Tool call failed: {tool_call.name}",
-                    exc,
-                ) from exc
+                result = {
+                    "status": "failed",
+                    "tool": tool_call.tool_id,
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                }
             last_result = result
             tool_call_results.append(
                 ToolCallResult(
@@ -172,14 +183,58 @@ class LLMService:
             }
             for tool in await self.mcp_registry.list_tools()
         ]
-        return local_tools + mcp_tools
+        workflow_tools = [
+            {
+                "id": "workflow:finance_company_report",
+                "name": "finance_company_report",
+                "description": (
+                    "Run the finance company report workflow. This workflow "
+                    "executes: start, get company info, get news, get financial "
+                    "data, generate report, end. Prefer this when the user asks "
+                    "to run, validate, or analyze the whole finance workflow."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Stock ticker symbol. Defaults to AMD.",
+                            "default": "AMD",
+                        }
+                    },
+                    "additionalProperties": False,
+                },
+                "source": "workflow",
+            }
+        ]
+        return local_tools + mcp_tools + workflow_tools
 
-    async def _call_tool(self, tool_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _call_tool(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
         if tool_id.startswith("function:"):
             tool_name = tool_id.removeprefix("function:")
             return await self.tool_registry.call(tool_name, arguments)
+        if tool_id.startswith("workflow:"):
+            workflow_name = tool_id.removeprefix("workflow:")
+            return await self._call_workflow(workflow_name, arguments)
         mcp_result = await self.mcp_registry.call_tool(tool_id, arguments)
         return self._normalize_mcp_result(mcp_result)
+
+    async def _call_workflow(
+        self,
+        workflow_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if workflow_name != "finance_company_report":
+            raise RuntimeError(f"Unknown workflow: {workflow_name}")
+
+        response = await self.workflow_service.run_finance_report(
+            WorkflowRunRequest(symbol=str(arguments.get("symbol") or "AMD"))
+        )
+        return response.model_dump()
 
     async def _summarize_tool_results(
         self,
@@ -187,6 +242,10 @@ class LLMService:
         request: ChatRequest,
         tool_call_results: list[ToolCallResult],
     ) -> str:
+        serialized_tool_results = json.dumps(
+            self._dump_tool_results(tool_call_results),
+            ensure_ascii=False,
+        )
         response = await client.chat.completions.create(
             model=self.settings.openai_model,
             messages=[
@@ -194,7 +253,10 @@ class LLMService:
                     "role": "system",
                     "content": (
                         "Answer the user using only the provided tool results. "
-                        "Do not mention implementation details unless the user asks."
+                        "If a workflow or tool result has status=failed or an "
+                        "error field, analyze the failed step, likely reason, "
+                        "and actionable next step. Do not mention implementation "
+                        "details unless the user asks."
                     ),
                 },
                 *[
@@ -204,10 +266,7 @@ class LLMService:
                 {"role": "user", "content": request.message},
                 {
                     "role": "user",
-                    "content": (
-                        "Tool results:\n"
-                        f"{json.dumps([result.model_dump() for result in tool_call_results], ensure_ascii=False)}"
-                    ),
+                    "content": f"Tool results:\n{serialized_tool_results}",
                 },
             ],
             temperature=self.settings.llm_temperature,
@@ -222,7 +281,11 @@ class LLMService:
         tool_call_results: list[ToolCallResult],
     ) -> str:
         try:
-            return await self._summarize_tool_results(client, request, tool_call_results)
+            return await self._summarize_tool_results(
+                client,
+                request,
+                tool_call_results,
+            )
         except Exception:
             logger.warning(
                 "Tool result summarization failed; returning raw result",
@@ -232,6 +295,12 @@ class LLMService:
                 [result.model_dump() for result in tool_call_results],
                 ensure_ascii=False,
             )
+
+    def _dump_tool_results(
+        self,
+        tool_call_results: list[ToolCallResult],
+    ) -> list[dict[str, Any]]:
+        return [result.model_dump() for result in tool_call_results]
 
     def _normalize_mcp_result(self, result: dict[str, Any]) -> dict[str, Any]:
         content = result.get("content") or []
