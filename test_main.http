@@ -1,0 +1,41 @@
+# Test your FastAPI endpoints
+
+GET http://127.0.0.1:8001/
+Accept: application/json
+
+###
+
+GET http://127.0.0.1:8001/health
+Accept: application/json
+
+###
+
+POST http://127.0.0.1:8001/api/chat
+Content-Type: application/json
+Accept: application/json
+
+{
+  "message": "请帮我计算 12.5 加 7.5",
+  "use_tools": true
+}
+
+###
+
+GET http://127.0.0.1:8001/api/mcp/tools
+Accept: application/json
+
+###
+
+POST http://127.0.0.1:8001/api/mcp/call
+Content-Type: application/json
+Accept: application/json
+
+{
+  "name": "mcp:arithmetic:multiply",
+  "arguments": {
+    "left": 6,
+    "right": 7
+  }
+}
+
+###
