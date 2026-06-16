@@ -9,11 +9,9 @@ from app.core.config import get_settings
 from app.schemas.chat import ChatRequest, ChatResponse, ToolCallResult
 from app.schemas.workflow import WorkflowRunRequest
 from app.services.errors import ServiceUnavailableError
-from app.services.mcp_registry import MCPRegistry, get_mcp_registry
 from app.services.openai_client import build_openai_client
-from app.services.tool_planner import ToolPlanner, get_tool_planner
+from app.services.workflow_router import WorkflowRouter, get_workflow_router
 from app.services.workflow_service import WorkflowService, get_workflow_service
-from app.tools.registry import ToolRegistry, get_tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -21,40 +19,23 @@ logger = logging.getLogger(__name__)
 class LLMService:
     def __init__(
         self,
-        tool_registry: Optional[ToolRegistry] = None,
-        mcp_registry: Optional[MCPRegistry] = None,
         workflow_service: Optional[WorkflowService] = None,
-        tool_planner: Optional[ToolPlanner] = None,
+        workflow_router: Optional[WorkflowRouter] = None,
     ) -> None:
         self.settings = get_settings()
         self.client: Optional[AsyncOpenAI] = None
-        self.tool_registry = tool_registry or get_tool_registry()
-        self.mcp_registry = mcp_registry or get_mcp_registry()
         self.workflow_service = workflow_service or get_workflow_service()
-        self.tool_planner = tool_planner or get_tool_planner()
+        self.workflow_router = workflow_router or get_workflow_router()
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         try:
             client = self._client()
             if request.use_tools:
-                tool_response = await self._try_planned_tool_calls(client, request)
-                if tool_response is not None:
-                    return tool_response
+                workflow_response = await self._try_route_workflow(client, request)
+                if workflow_response is not None:
+                    return workflow_response
 
-            messages = self._build_messages(request)
-            response = await client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=messages,
-                temperature=self.settings.llm_temperature,
-                timeout=30,
-            )
-            message = response.choices[0].message
-
-            return ChatResponse(
-                message=message.content or "",
-                model=self.settings.openai_model,
-                tool_calls=[],
-            )
+            return await self._direct_llm_invoke(client, request)
         except ServiceUnavailableError:
             raise
         except (OpenAIError, TimeoutError) as exc:
@@ -70,88 +51,78 @@ class LLMService:
                 exc,
             ) from exc
 
-    async def _try_planned_tool_calls(
+    async def _try_route_workflow(
         self,
         client: AsyncOpenAI,
         request: ChatRequest,
     ) -> Optional[ChatResponse]:
         try:
-            tool_catalog = await self._tool_catalog()
-            allowed_tool_ids = {tool["id"] for tool in tool_catalog}
-            tool_plan = await self.tool_planner.plan(
+            route = await self.workflow_router.route(
                 client=client,
                 model=self.settings.openai_model,
                 message=request.message,
                 history=request.history,
-                tool_catalog=tool_catalog,
             )
         except Exception as exc:
             logger.warning(
-                "Tool planning failed; falling back to plain chat",
+                "Workflow routing failed; falling back to direct LLM invoke",
                 exc_info=True,
             )
             return None
 
-        tool_plan = [
-            tool_call
-            for tool_call in tool_plan
-            if tool_call.tool_id in allowed_tool_ids
-        ]
-        if not tool_plan:
+        if route.workflow_id is None:
             return None
 
-        tool_call_results: list[ToolCallResult] = []
-        last_result: Optional[dict[str, Any]] = None
+        try:
+            result = await self._call_workflow(route.workflow_id, route.arguments)
+        except Exception as exc:
+            logger.exception("Workflow call failed")
+            result = {
+                "status": "failed",
+                "workflow": route.workflow_id,
+                "error": str(exc),
+                "error_type": exc.__class__.__name__,
+            }
 
-        for tool_call in tool_plan:
-            arguments = self._resolve_arguments(tool_call.arguments, last_result)
-            try:
-                result = await self._call_tool(tool_call.tool_id, arguments)
-            except Exception as exc:
-                logger.exception("Tool call failed")
-                result = {
-                    "status": "failed",
-                    "tool": tool_call.tool_id,
-                    "error": str(exc),
-                    "error_type": exc.__class__.__name__,
-                }
-            last_result = result
-            tool_call_results.append(
-                ToolCallResult(
-                    name=tool_call.name,
-                    arguments=arguments,
-                    result=result,
-                )
-            )
+        workflow_result = ToolCallResult(
+            name=route.workflow_id,
+            arguments=route.arguments,
+            result=result,
+        )
 
         return ChatResponse(
-            message=await self._safe_summarize_tool_results(
+            message=await self._safe_summarize_workflow_result(
                 client,
                 request,
-                tool_call_results,
+                workflow_result,
             ),
             model=self.settings.openai_model,
-            tool_calls=tool_call_results,
+            tool_calls=[workflow_result],
+        )
+
+    async def _direct_llm_invoke(
+        self,
+        client: AsyncOpenAI,
+        request: ChatRequest,
+    ) -> ChatResponse:
+        response = await client.chat.completions.create(
+            model=self.settings.openai_model,
+            messages=self._build_messages(request),
+            temperature=self.settings.llm_temperature,
+            timeout=30,
+        )
+        message = response.choices[0].message
+
+        return ChatResponse(
+            message=message.content or "",
+            model=self.settings.openai_model,
+            tool_calls=[],
         )
 
     def _client(self) -> AsyncOpenAI:
         if self.client is None:
             self.client = build_openai_client(self.settings)
         return self.client
-
-    def _resolve_arguments(
-        self,
-        arguments: dict[str, Any],
-        previous_result: Optional[dict[str, Any]],
-    ) -> dict[str, Any]:
-        resolved_arguments = dict(arguments)
-        for key, value in resolved_arguments.items():
-            if value != "__previous_result__":
-                continue
-            if previous_result is None or "result" not in previous_result:
-                raise RuntimeError("Previous tool result is not available")
-            resolved_arguments[key] = previous_result["result"]
-        return resolved_arguments
 
     def _build_messages(self, request: ChatRequest) -> list[dict[str, str]]:
         messages = [
@@ -161,89 +132,27 @@ class LLMService:
         messages.append({"role": "user", "content": request.message})
         return messages
 
-    async def _tool_catalog(self) -> list[dict[str, Any]]:
-        local_tools = [
-            {
-                "id": f"function:{tool['function']['name']}",
-                "name": tool["function"]["name"],
-                "description": tool["function"].get("description", ""),
-                "parameters": tool["function"].get("parameters", {}),
-                "source": "function_calling",
-            }
-            for tool in self.tool_registry.openai_tools()
-        ]
-        mcp_tools = [
-            {
-                "id": tool.tool_id,
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-                "source": "mcp",
-                "service": tool.service_name,
-            }
-            for tool in await self.mcp_registry.list_tools()
-        ]
-        workflow_tools = [
-            {
-                "id": "workflow:finance_company_report",
-                "name": "finance_company_report",
-                "description": (
-                    "Run the finance company report workflow. This workflow "
-                    "executes: start, get company info, get news, get financial "
-                    "data, generate report, end. Prefer this when the user asks "
-                    "to run, validate, or analyze the whole finance workflow."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "symbol": {
-                            "type": "string",
-                            "description": "Stock ticker symbol. Defaults to AMD.",
-                            "default": "AMD",
-                        }
-                    },
-                    "additionalProperties": False,
-                },
-                "source": "workflow",
-            }
-        ]
-        return local_tools + mcp_tools + workflow_tools
-
-    async def _call_tool(
-        self,
-        tool_id: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        if tool_id.startswith("function:"):
-            tool_name = tool_id.removeprefix("function:")
-            return await self.tool_registry.call(tool_name, arguments)
-        if tool_id.startswith("workflow:"):
-            workflow_name = tool_id.removeprefix("workflow:")
-            return await self._call_workflow(workflow_name, arguments)
-        mcp_result = await self.mcp_registry.call_tool(tool_id, arguments)
-        return self._normalize_mcp_result(mcp_result)
-
     async def _call_workflow(
         self,
-        workflow_name: str,
+        workflow_id: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        if workflow_name != "finance_company_report":
-            raise RuntimeError(f"Unknown workflow: {workflow_name}")
+        if workflow_id != "workflow:finance_company_report":
+            raise RuntimeError(f"Unknown workflow: {workflow_id}")
 
         response = await self.workflow_service.run_finance_report(
             WorkflowRunRequest(symbol=str(arguments.get("symbol") or "AMD"))
         )
         return response.model_dump()
 
-    async def _summarize_tool_results(
+    async def _summarize_workflow_result(
         self,
         client: AsyncOpenAI,
         request: ChatRequest,
-        tool_call_results: list[ToolCallResult],
+        workflow_result: ToolCallResult,
     ) -> str:
-        serialized_tool_results = json.dumps(
-            self._dump_tool_results(tool_call_results),
+        serialized_workflow_result = json.dumps(
+            workflow_result.model_dump(),
             ensure_ascii=False,
         )
         response = await client.chat.completions.create(
@@ -252,11 +161,10 @@ class LLMService:
                 {
                     "role": "system",
                     "content": (
-                        "Answer the user using only the provided tool results. "
-                        "If a workflow or tool result has status=failed or an "
-                        "error field, analyze the failed step, likely reason, "
-                        "and actionable next step. Do not mention implementation "
-                        "details unless the user asks."
+                        "Answer the user using only the provided workflow result. "
+                        "If the workflow result has status=failed or an error "
+                        "field, analyze the failed step, likely reason, and "
+                        "actionable next step."
                     ),
                 },
                 *[
@@ -266,7 +174,7 @@ class LLMService:
                 {"role": "user", "content": request.message},
                 {
                     "role": "user",
-                    "content": f"Tool results:\n{serialized_tool_results}",
+                    "content": f"Workflow result:\n{serialized_workflow_result}",
                 },
             ],
             temperature=self.settings.llm_temperature,
@@ -274,46 +182,27 @@ class LLMService:
         )
         return response.choices[0].message.content or ""
 
-    async def _safe_summarize_tool_results(
+    async def _safe_summarize_workflow_result(
         self,
         client: AsyncOpenAI,
         request: ChatRequest,
-        tool_call_results: list[ToolCallResult],
+        workflow_result: ToolCallResult,
     ) -> str:
         try:
-            return await self._summarize_tool_results(
+            return await self._summarize_workflow_result(
                 client,
                 request,
-                tool_call_results,
+                workflow_result,
             )
         except Exception:
             logger.warning(
-                "Tool result summarization failed; returning raw result",
+                "Workflow result summarization failed; returning raw result",
                 exc_info=True,
             )
             return json.dumps(
-                [result.model_dump() for result in tool_call_results],
+                workflow_result.model_dump(),
                 ensure_ascii=False,
             )
-
-    def _dump_tool_results(
-        self,
-        tool_call_results: list[ToolCallResult],
-    ) -> list[dict[str, Any]]:
-        return [result.model_dump() for result in tool_call_results]
-
-    def _normalize_mcp_result(self, result: dict[str, Any]) -> dict[str, Any]:
-        content = result.get("content") or []
-        if not content:
-            return result
-        first_item = content[0]
-        if first_item.get("type") != "text":
-            return result
-        try:
-            parsed = json.loads(first_item.get("text", "{}"))
-        except json.JSONDecodeError:
-            return result
-        return parsed if isinstance(parsed, dict) else {"result": parsed}
 
 
 @lru_cache

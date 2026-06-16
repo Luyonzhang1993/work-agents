@@ -1,7 +1,11 @@
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from openai import AsyncOpenAI
+
+from app.core.config import get_settings
 from app.schemas.workflow import (
     WorkflowDefinitionResponse,
     WorkflowRunRequest,
@@ -9,7 +13,7 @@ from app.schemas.workflow import (
     WorkflowStepDefinition,
     WorkflowStepResult,
 )
-from app.services.mcp_registry import MCPRegistry, get_mcp_registry
+from app.services.openai_client import build_openai_client
 
 
 FINANCE_REPORT_WORKFLOW_ID = "finance_company_report"
@@ -20,37 +24,43 @@ FINANCE_REPORT_STEPS = [
     WorkflowStepDefinition(
         id="get_company_info",
         name="获取公司信息",
-        type="tool",
-        tool="mcp:finance:get_company_info",
+        type="llm",
+        tool="llm:get_company_info",
     ),
     WorkflowStepDefinition(
         id="get_company_news",
         name="获取新闻",
-        type="tool",
-        tool="mcp:finance:get_company_news",
+        type="llm",
+        tool="llm:get_company_news",
     ),
     WorkflowStepDefinition(
         id="get_financial_data",
         name="获取财务数据",
-        type="tool",
-        tool="mcp:finance:get_financial_data",
+        type="llm",
+        tool="llm:get_financial_data",
     ),
-    WorkflowStepDefinition(id="generate_report", name="生成报告", type="task"),
+    WorkflowStepDefinition(
+        id="generate_report",
+        name="生成报告",
+        type="llm",
+        tool="llm:generate_report",
+    ),
     WorkflowStepDefinition(id="end", name="结束", type="end"),
 ]
 
 
 class WorkflowService:
-    def __init__(self, mcp_registry: MCPRegistry | None = None) -> None:
-        self.mcp_registry = mcp_registry or get_mcp_registry()
+    def __init__(self, llm_client: AsyncOpenAI | None = None) -> None:
+        self.settings = get_settings()
+        self.llm_client = llm_client
 
     def finance_report_definition(self) -> WorkflowDefinitionResponse:
         return WorkflowDefinitionResponse(
             id=FINANCE_REPORT_WORKFLOW_ID,
             name="金融公司报告工作流",
             description=(
-                "按公司信息、新闻、财务数据的顺序获取数据，"
-                "并生成一份报告。"
+                "按公司信息、新闻、财务数据的顺序让 LLM "
+                "获取和整理信息，并由 LLM 生成最终报告。"
             ),
             steps=FINANCE_REPORT_STEPS,
         )
@@ -64,60 +74,163 @@ class WorkflowService:
             self._step_result("start", "开始", {"symbol": symbol}),
         ]
 
-        company_info = await self._run_tool_step(
+        parallel_results = await self._run_parallel_llm_steps(
             step_results,
-            step_id="get_company_info",
-            name="获取公司信息",
-            operation=lambda: self._call_finance_tool(
-                "mcp:finance:get_company_info",
-                symbol,
-            ),
+            [
+                (
+                    "get_company_info",
+                    "获取公司信息",
+                    lambda: self._get_company_info(symbol),
+                ),
+                (
+                    "get_company_news",
+                    "获取新闻",
+                    lambda: self._get_company_news(symbol),
+                ),
+                (
+                    "get_financial_data",
+                    "获取财务数据",
+                    lambda: self._get_financial_data(symbol),
+                ),
+            ],
         )
-        if company_info is None:
+        if parallel_results is None:
             return self._failed_response(step_results)
 
-        company_news = await self._run_tool_step(
+        company_info = parallel_results["get_company_info"]
+        company_news = parallel_results["get_company_news"]
+        financial_data = parallel_results["get_financial_data"]
+
+        report_result = await self._run_llm_step(
             step_results,
-            step_id="get_company_news",
-            name="获取新闻",
-            operation=lambda: self._call_finance_tool(
-                "mcp:finance:get_company_news",
+            step_id="generate_report",
+            name="生成报告",
+            operation=lambda: self._generate_report(
                 symbol,
+                company_info,
+                company_news,
+                financial_data,
             ),
         )
-        if company_news is None:
+        if report_result is None:
             return self._failed_response(step_results)
 
-        financial_data = await self._run_tool_step(
-            step_results,
-            step_id="get_financial_data",
-            name="获取财务数据",
-            operation=lambda: self._call_finance_tool(
-                "mcp:finance:get_financial_data",
-                symbol,
-            ),
-        )
-        if financial_data is None:
-            return self._failed_response(step_results)
-
-        report = self._generate_report(company_info, company_news, financial_data)
-        step_results.append(
-            self._step_result(
-                "generate_report",
-                "生成报告",
-                {"report": report},
-            )
-        )
         step_results.append(self._step_result("end", "结束", {"symbol": symbol}))
 
         return WorkflowRunResponse(
             workflow_id=FINANCE_REPORT_WORKFLOW_ID,
             status="completed",
             steps=step_results,
-            report=report,
+            report=str(report_result.get("report", "")),
         )
 
-    async def _run_tool_step(
+    async def _get_company_info(self, symbol: str) -> dict[str, Any]:
+        return await self._complete_json(
+            system_prompt=(
+                "You are a finance research assistant. Return only valid JSON. "
+                "Do not fabricate precise facts; if uncertain, use null and add "
+                "a short caveat."
+            ),
+            user_prompt=(
+                f"获取股票代码 {symbol} 对应公司的基础信息。"
+                "返回字段：symbol, company_name, exchange, industry, sector, "
+                "headquarters, website, business_summary, caveats。"
+            ),
+        )
+
+    async def _get_company_news(
+        self,
+        symbol: str,
+    ) -> dict[str, Any]:
+        return await self._complete_json(
+            system_prompt=(
+                "You are a finance news analyst. Return only valid JSON. "
+                "Do not invent source URLs or exact timestamps. If you cannot "
+                "verify freshness, say so in caveats."
+            ),
+            user_prompt=(
+                f"基于公司代码 {symbol}，"
+                "独立整理重要新闻或市场动态。"
+                "返回字段：symbol, news_items, sentiment, key_themes, caveats。\n"
+            ),
+        )
+
+    async def _get_financial_data(
+        self,
+        symbol: str,
+    ) -> dict[str, Any]:
+        return await self._complete_json(
+            system_prompt=(
+                "You are a finance fundamentals analyst. Return only valid JSON. "
+                "Do not fabricate exact financial numbers; if data is unavailable "
+                "or stale, use null and explain in caveats."
+            ),
+            user_prompt=(
+                f"基于公司代码 {symbol}，"
+                "独立整理可用于报告的财务数据和指标。"
+                "返回字段：symbol, period, currency, revenue, gross_margin, "
+                "operating_income, net_income, eps, cash_flow, balance_sheet, "
+                "financial_highlights, caveats。"
+            ),
+        )
+
+    async def _generate_report(
+        self,
+        symbol: str,
+        company_info: dict[str, Any],
+        company_news: dict[str, Any],
+        financial_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        report = await self._complete_text(
+            system_prompt=(
+                "You are an equity research report writer. Generate the final "
+                "report directly from the workflow node outputs. Do not use a "
+                "fixed template; choose the structure that best explains the "
+                "company, news context, financial picture, risks, and caveats."
+            ),
+            user_prompt=(
+                f"请为 {symbol} 生成一份中文金融分析报告。\n"
+                f"公司信息：{json.dumps(company_info, ensure_ascii=False)}\n"
+                f"新闻信息：{json.dumps(company_news, ensure_ascii=False)}\n"
+                f"财务数据：{json.dumps(financial_data, ensure_ascii=False)}"
+            ),
+        )
+        return {"report": report}
+
+    async def _run_parallel_llm_steps(
+        self,
+        step_results: list[WorkflowStepResult],
+        steps: list[tuple[str, str, Callable[[], Awaitable[dict[str, Any]]]]],
+    ) -> dict[str, dict[str, Any]] | None:
+        outputs = await asyncio.gather(
+            *(operation() for _, _, operation in steps),
+            return_exceptions=True,
+        )
+
+        completed_outputs: dict[str, dict[str, Any]] = {}
+        has_failure = False
+        for (step_id, name, _), output in zip(steps, outputs):
+            if isinstance(output, Exception):
+                has_failure = True
+                step_results.append(
+                    self._step_result(
+                        step_id,
+                        name,
+                        {
+                            "error": str(output),
+                            "error_type": output.__class__.__name__,
+                        },
+                        status="failed",
+                    )
+                )
+                continue
+
+            completed_outputs[step_id] = output
+            step_results.append(self._step_result(step_id, name, output))
+
+        return None if has_failure else completed_outputs
+
+    async def _run_llm_step(
         self,
         step_results: list[WorkflowStepResult],
         step_id: str,
@@ -167,68 +280,90 @@ class WorkflowService:
             error=error,
         )
 
-    async def _call_finance_tool(self, tool_id: str, symbol: str) -> dict[str, Any]:
-        result = await self.mcp_registry.call_tool(tool_id, {"symbol": symbol})
-        return self._parse_mcp_text_result(result)
-
-    def _parse_mcp_text_result(self, result: dict[str, Any]) -> dict[str, Any]:
-        if result.get("isError") is True:
-            raise RuntimeError(str(result))
-
-        content = result.get("content")
-        if not isinstance(content, list) or not content:
-            return result
-
-        first_item = content[0]
-        if not isinstance(first_item, dict):
-            return result
-
-        text = first_item.get("text")
-        if not isinstance(text, str):
-            return result
-
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, dict) else {"value": parsed}
-
-    def _generate_report(
+    async def _complete_json(
         self,
-        company_info: dict[str, Any],
-        company_news: dict[str, Any],
-        financial_data: dict[str, Any],
-    ) -> str:
-        news_items = company_news.get("news", [])
-        top_news = news_items[0] if news_items else {}
-        company_name = company_info.get(
-            "companyName",
-            company_info.get("symbol", "Unknown"),
-        )
+        system_prompt: str,
+        user_prompt: str,
+    ) -> dict[str, Any]:
+        content = await self._complete_text(system_prompt, user_prompt, temperature=0)
+        return self._loads_json_object(content)
 
-        return "\n".join(
-            [
-                f"# {company_name} 公司报告",
-                "",
-                "## 公司信息",
-                f"- 股票代码：{company_info.get('symbol', 'N/A')}",
-                f"- 行业：{company_info.get('industry', 'N/A')}",
-                f"- CEO：{company_info.get('ceo', 'N/A')}",
-                "",
-                "## 最新新闻",
-                f"- 头条：{top_news.get('title', 'N/A')}",
-                f"- 来源：{top_news.get('source', 'N/A')}",
-                "",
-                "## 财务数据",
-                f"- 报告期：{financial_data.get('period', 'N/A')}",
-                f"- 营收：{financial_data.get('revenue', 'N/A')} "
-                f"{financial_data.get('currency', '')}",
-                f"- 净利润：{financial_data.get('netIncome', 'N/A')} "
-                f"{financial_data.get('currency', '')}",
-                "",
-                (
-                    "说明：当前报告基于 mock MCP 数据生成，"
-                    "仅用于 workflow 验证。"
-                ),
-            ]
+    async def _complete_text(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float | None = None,
+    ) -> str:
+        client = self._client()
+        response = await client.chat.completions.create(
+            model=self.settings.openai_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=(
+                self.settings.llm_temperature
+                if temperature is None
+                else temperature
+            ),
+            timeout=60,
         )
+        return response.choices[0].message.content or ""
+
+    def _client(self) -> AsyncOpenAI:
+        if self.llm_client is None:
+            self.llm_client = build_openai_client(self.settings)
+        return self.llm_client
+
+    def _loads_json_object(self, content: str) -> dict[str, Any]:
+        cleaned_content = content.strip()
+        if cleaned_content.startswith("```"):
+            cleaned_content = cleaned_content.strip("`")
+            if cleaned_content.lower().startswith("json"):
+                cleaned_content = cleaned_content[4:]
+            cleaned_content = cleaned_content.strip()
+
+        try:
+            data = json.loads(cleaned_content)
+        except json.JSONDecodeError:
+            data = self._first_json_object(cleaned_content)
+
+        if not isinstance(data, dict):
+            raise ValueError("LLM response did not contain a JSON object")
+        return data
+
+    def _first_json_object(self, content: str) -> dict[str, Any] | None:
+        start = content.find("{")
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(content)):
+            character = content[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    in_string = False
+                continue
+
+            if character == '"':
+                in_string = True
+            elif character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        data = json.loads(content[start : index + 1])
+                    except json.JSONDecodeError:
+                        return None
+                    return data if isinstance(data, dict) else None
+        return None
 
     def _step_result(
         self,

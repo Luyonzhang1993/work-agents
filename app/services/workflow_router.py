@@ -7,28 +7,52 @@ from openai import AsyncOpenAI
 from app.schemas.chat import ChatMessage
 
 
+WORKFLOW_CATALOG = [
+    {
+        "id": "workflow:finance_company_report",
+        "name": "finance_company_report",
+        "description": (
+            "Run the finance company report workflow. This workflow executes "
+            "a fixed sequence: start, get company info, get news, get financial "
+            "data, generate report, end. Company info, news, and financial data "
+            "are independent LLM nodes that run in parallel before the "
+            "LLM-generated report."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Stock ticker symbol. Defaults to AMD.",
+                    "default": "AMD",
+                }
+            },
+            "additionalProperties": False,
+        },
+    }
+]
+
+
 @dataclass(frozen=True)
-class ToolPlanCall:
-    tool_id: str
-    name: str
+class WorkflowRoute:
+    workflow_id: str | None
     arguments: dict[str, Any]
 
 
-class ToolPlanner:
-    async def plan(
+class WorkflowRouter:
+    async def route(
         self,
         client: AsyncOpenAI,
         model: str,
         message: str,
         history: list[ChatMessage],
-        tool_catalog: list[dict[str, Any]],
-    ) -> list[ToolPlanCall]:
+    ) -> WorkflowRoute:
         response = await client.chat.completions.create(
             model=model,
             messages=[
                 {
                     "role": "system",
-                    "content": self._system_prompt(tool_catalog),
+                    "content": self._system_prompt(),
                 },
                 *[
                     {"role": history_message.role, "content": history_message.content}
@@ -40,49 +64,38 @@ class ToolPlanner:
             timeout=30,
         )
         content = response.choices[0].message.content or ""
-        return self._parse_plan(content)
+        return self._parse_route(content)
 
-    def _system_prompt(self, tool_catalog: list[dict[str, Any]]) -> str:
+    def workflow_catalog(self) -> list[dict[str, Any]]:
+        return WORKFLOW_CATALOG
+
+    def _system_prompt(self) -> str:
         return (
-            "You are a tool planning model. Decide whether the user request should "
-            "be answered by calling the available tools. Do not execute tools. "
-            "Return only valid JSON with this exact shape: "
-            '{"tool_calls":[{"tool":"tool_id","arguments":{}}]}. '
-            "If no tool is needed, return {\"tool_calls\":[]}. "
-            "For multi-step requests, include calls in execution order. "
-            "If one workflow tool matches the whole user request, prefer that "
-            "workflow over planning its internal tools one by one. "
-            "If a later call needs the previous tool result, use the string "
-            '"__previous_result__" as that argument value. '
-            "Only use the exact tool id values from this catalog:\n"
-            f"{json.dumps(tool_catalog, ensure_ascii=False)}"
+            "You are a lightweight workflow router. Your only job is to decide "
+            "whether the user request should run one workflow or should be "
+            "handled by direct LLM invocation. Do not plan internal tools, MCP "
+            "calls, or workflow steps. Return only valid JSON with this exact "
+            "shape: {\"workflow\":\"workflow_id_or_null\",\"arguments\":{}}. "
+            "Use null when no workflow is appropriate. Only use workflow ids "
+            "from this catalog:\n"
+            f"{json.dumps(WORKFLOW_CATALOG, ensure_ascii=False)}"
         )
 
-    def _parse_plan(self, content: str) -> list[ToolPlanCall]:
+    def _parse_route(self, content: str) -> WorkflowRoute:
         data = self._loads_json(content)
-        tool_calls = data.get("tool_calls", [])
-        if not isinstance(tool_calls, list):
-            return []
+        workflow_id = data.get("workflow") or data.get("workflow_id")
+        arguments = data.get("arguments", {})
 
-        plan: list[ToolPlanCall] = []
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            tool_id = tool_call.get("tool") or tool_call.get("tool_id")
-            name = tool_call.get("name")
-            arguments = tool_call.get("arguments", {})
-            if not isinstance(tool_id, str) and isinstance(name, str):
-                tool_id = name
-            if not isinstance(tool_id, str) or not isinstance(arguments, dict):
-                continue
-            plan.append(
-                ToolPlanCall(
-                    tool_id=tool_id,
-                    name=name if isinstance(name, str) else tool_id,
-                    arguments=arguments,
-                )
-            )
-        return plan
+        if not isinstance(workflow_id, str):
+            workflow_id = None
+        if not isinstance(arguments, dict):
+            arguments = {}
+
+        allowed_ids = {workflow["id"] for workflow in WORKFLOW_CATALOG}
+        if workflow_id not in allowed_ids:
+            workflow_id = None
+
+        return WorkflowRoute(workflow_id=workflow_id, arguments=arguments)
 
     def _loads_json(self, content: str) -> dict[str, Any]:
         cleaned_content = content.strip()
@@ -97,10 +110,10 @@ class ToolPlanner:
         except json.JSONDecodeError:
             json_object = self._first_json_object(cleaned_content)
             if json_object is None:
-                return {"tool_calls": []}
+                return {"workflow": None, "arguments": {}}
             data = json_object
 
-        return data if isinstance(data, dict) else {"tool_calls": []}
+        return data if isinstance(data, dict) else {"workflow": None, "arguments": {}}
 
     def _first_json_object(self, content: str) -> dict[str, Any] | None:
         start = content.find("{")
@@ -136,5 +149,5 @@ class ToolPlanner:
         return None
 
 
-def get_tool_planner() -> ToolPlanner:
-    return ToolPlanner()
+def get_workflow_router() -> WorkflowRouter:
+    return WorkflowRouter()
