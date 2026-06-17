@@ -1,13 +1,17 @@
 from dataclasses import dataclass
 from typing import Any
 
-from app.services.mcp_client import MCPStdioClient
+from app.core.config import get_settings
+from app.services.mcp_client import MCPFraming, MCPStdioClient
 
 
 @dataclass(frozen=True)
 class MCPServiceDefinition:
     name: str
-    module: str
+    module: str | None = None
+    command: list[str] | None = None
+    framing: MCPFraming = "headers"
+    timeout: float = 10
 
 
 @dataclass(frozen=True)
@@ -39,7 +43,11 @@ class MCPRegistry:
                 )
         return tools
 
-    async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def call_tool(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
         service_name, tool_name = self._parse_tool_id(tool_id)
         client = self._client(service_name)
         return await client.call_tool(tool_name, arguments)
@@ -48,7 +56,12 @@ class MCPRegistry:
         service = self.services.get(service_name)
         if service is None:
             raise RuntimeError(f"Unknown MCP service: {service_name}")
-        return MCPStdioClient(service.module)
+        return MCPStdioClient(
+            module=service.module,
+            command=service.command,
+            framing=service.framing,
+            timeout=service.timeout,
+        )
 
     def _tool_id(self, service_name: str, tool_name: str) -> str:
         return f"mcp:{service_name}:{tool_name}"
@@ -61,15 +74,28 @@ class MCPRegistry:
 
 
 def get_mcp_registry() -> MCPRegistry:
-    return MCPRegistry(
-        services=[
+    settings = get_settings()
+    services = [
+        MCPServiceDefinition(
+            name="arithmetic",
+            module="app.mcp_server.arithmetic",
+        )
+    ]
+    if settings.alpha_vantage_api_key:
+        services.append(
             MCPServiceDefinition(
-                name="arithmetic",
-                module="app.mcp_server.arithmetic",
-            ),
-            MCPServiceDefinition(
-                name="finance",
-                module="app.mcp_server.finance",
+                name="alphavantage",
+                command=[
+                    "uvx",
+                    "--from",
+                    "marketdata-mcp-server",
+                    "marketdata-mcp",
+                    settings.alpha_vantage_api_key,
+                ],
+                framing="jsonl",
+                timeout=60,
             )
-        ]
+        )
+    return MCPRegistry(
+        services=services,
     )

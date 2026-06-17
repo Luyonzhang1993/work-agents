@@ -3,7 +3,10 @@ import json
 import subprocess
 import sys
 from itertools import count
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+
+
+MCPFraming = Literal["headers", "jsonl"]
 
 
 class MCPError(RuntimeError):
@@ -11,19 +14,27 @@ class MCPError(RuntimeError):
 
 
 class MCPStdioClient:
-    def __init__(self, module: str, timeout: float = 10) -> None:
+    def __init__(
+        self,
+        module: str | None = None,
+        command: list[str] | None = None,
+        framing: MCPFraming = "headers",
+        timeout: float = 10,
+    ) -> None:
         self.module = module
+        self.command = command
+        self.framing = framing
         self.timeout = timeout
         self._request_ids = count(1)
 
     async def list_tools(self) -> list[dict[str, Any]]:
-        async with _MCPProcess(self.module, self.timeout) as process:
+        async with _MCPProcess(self._command(), self.framing, self.timeout) as process:
             await process.initialize(next(self._request_ids))
             response = await process.request(next(self._request_ids), "tools/list")
             return response.get("tools", [])
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        async with _MCPProcess(self.module, self.timeout) as process:
+        async with _MCPProcess(self._command(), self.framing, self.timeout) as process:
             await process.initialize(next(self._request_ids))
             response = await process.request(
                 next(self._request_ids),
@@ -32,10 +43,23 @@ class MCPStdioClient:
             )
             return response
 
+    def _command(self) -> list[str]:
+        if self.command is not None:
+            return self.command
+        if self.module is not None:
+            return [sys.executable, "-m", self.module]
+        raise MCPError("MCP client requires either module or command")
+
 
 class _MCPProcess:
-    def __init__(self, module: str, timeout: float) -> None:
-        self.module = module
+    def __init__(
+        self,
+        command: list[str],
+        framing: MCPFraming,
+        timeout: float,
+    ) -> None:
+        self.command = command
+        self.framing = framing
         self.timeout = timeout
         self.process: Optional[asyncio.subprocess.Process] = None
 
@@ -43,9 +67,7 @@ class _MCPProcess:
         try:
             self.process = await asyncio.wait_for(
                 asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-m",
-                    self.module,
+                    *self.command,
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
@@ -53,7 +75,8 @@ class _MCPProcess:
                 timeout=self.timeout,
             )
         except Exception as exc:
-            raise MCPError(f"Failed to start MCP process: {self.module}") from exc
+            command = " ".join(self.command)
+            raise MCPError(f"Failed to start MCP process: {command}") from exc
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
@@ -101,7 +124,7 @@ class _MCPProcess:
                 timeout=self.timeout,
             )
             response = await asyncio.wait_for(
-                self.read_message(),
+                self.read_response(request_id),
                 timeout=self.timeout,
             )
         except asyncio.TimeoutError as exc:
@@ -110,6 +133,12 @@ class _MCPProcess:
             error = response["error"]
             raise MCPError(error.get("message", "MCP request failed"))
         return response.get("result", {})
+
+    async def read_response(self, request_id: int) -> dict[str, Any]:
+        while True:
+            response = await self.read_message()
+            if response.get("id") == request_id:
+                return response
 
     async def notify(
         self,
@@ -128,14 +157,23 @@ class _MCPProcess:
         if self.process is None or self.process.stdin is None:
             raise MCPError("MCP process is not running")
         body = json.dumps(message, ensure_ascii=False).encode("utf-8")
-        self.process.stdin.write(
-            f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
-        )
+        if self.framing == "jsonl":
+            self.process.stdin.write(body + b"\n")
+        else:
+            self.process.stdin.write(
+                f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+            )
         await self.process.stdin.drain()
 
     async def read_message(self) -> dict[str, Any]:
         if self.process is None or self.process.stdout is None:
             raise MCPError("MCP process is not running")
+
+        if self.framing == "jsonl":
+            line = await self.process.stdout.readline()
+            if not line:
+                raise MCPError("MCP process closed stdout")
+            return json.loads(line.decode("utf-8"))
 
         headers: dict[str, str] = {}
         while True:
@@ -155,4 +193,4 @@ class _MCPProcess:
 
 
 def get_arithmetic_mcp_client() -> MCPStdioClient:
-    return MCPStdioClient("app.mcp_server.arithmetic")
+    return MCPStdioClient(module="app.mcp_server.arithmetic")

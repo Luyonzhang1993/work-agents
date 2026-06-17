@@ -32,6 +32,26 @@ WORKFLOW_CATALOG = [
     }
 ]
 
+ROUTE_FINANCE_WORKFLOW_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "route_finance_company_report",
+        "description": WORKFLOW_CATALOG[0]["description"],
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Stock ticker symbol. Defaults to AMD.",
+                }
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+}
+
 
 @dataclass(frozen=True)
 class WorkflowRoute:
@@ -60,11 +80,22 @@ class WorkflowRouter:
                 ],
                 {"role": "user", "content": message},
             ],
+            tools=[ROUTE_FINANCE_WORKFLOW_TOOL],
+            tool_choice="auto",
             temperature=0,
             timeout=30,
         )
-        content = response.choices[0].message.content or ""
-        return self._parse_route(content)
+        message = response.choices[0].message
+        tool_calls = message.tool_calls or []
+        for tool_call in tool_calls:
+            function = tool_call.function
+            if function.name != "route_finance_company_report":
+                continue
+            return WorkflowRoute(
+                workflow_id="workflow:finance_company_report",
+                arguments=self._loads_json(function.arguments),
+            )
+        return WorkflowRoute(workflow_id=None, arguments={})
 
     def workflow_catalog(self) -> list[dict[str, Any]]:
         return WORKFLOW_CATALOG
@@ -73,80 +104,19 @@ class WorkflowRouter:
         return (
             "You are a lightweight workflow router. Your only job is to decide "
             "whether the user request should run one workflow or should be "
-            "handled by direct LLM invocation. Do not plan internal tools, MCP "
-            "calls, or workflow steps. Return only valid JSON with this exact "
-            "shape: {\"workflow\":\"workflow_id_or_null\",\"arguments\":{}}. "
-            "Use null when no workflow is appropriate. Only use workflow ids "
-            "from this catalog:\n"
-            f"{json.dumps(WORKFLOW_CATALOG, ensure_ascii=False)}"
+            "handled by direct LLM invocation. If a workflow is appropriate, "
+            "call exactly one workflow routing function. If no workflow is "
+            "appropriate, answer with no tool calls. Do not plan internal tools, "
+            "MCP calls, or workflow steps."
         )
-
-    def _parse_route(self, content: str) -> WorkflowRoute:
-        data = self._loads_json(content)
-        workflow_id = data.get("workflow") or data.get("workflow_id")
-        arguments = data.get("arguments", {})
-
-        if not isinstance(workflow_id, str):
-            workflow_id = None
-        if not isinstance(arguments, dict):
-            arguments = {}
-
-        allowed_ids = {workflow["id"] for workflow in WORKFLOW_CATALOG}
-        if workflow_id not in allowed_ids:
-            workflow_id = None
-
-        return WorkflowRoute(workflow_id=workflow_id, arguments=arguments)
 
     def _loads_json(self, content: str) -> dict[str, Any]:
         cleaned_content = content.strip()
-        if cleaned_content.startswith("```"):
-            cleaned_content = cleaned_content.strip("`")
-            if cleaned_content.lower().startswith("json"):
-                cleaned_content = cleaned_content[4:]
-            cleaned_content = cleaned_content.strip()
-
         try:
             data = json.loads(cleaned_content)
         except json.JSONDecodeError:
-            json_object = self._first_json_object(cleaned_content)
-            if json_object is None:
-                return {"workflow": None, "arguments": {}}
-            data = json_object
-
-        return data if isinstance(data, dict) else {"workflow": None, "arguments": {}}
-
-    def _first_json_object(self, content: str) -> dict[str, Any] | None:
-        start = content.find("{")
-        if start == -1:
-            return None
-
-        depth = 0
-        in_string = False
-        escaped = False
-        for index in range(start, len(content)):
-            character = content[index]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif character == "\\":
-                    escaped = True
-                elif character == '"':
-                    in_string = False
-                continue
-
-            if character == '"':
-                in_string = True
-            elif character == "{":
-                depth += 1
-            elif character == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        data = json.loads(content[start : index + 1])
-                    except json.JSONDecodeError:
-                        return None
-                    return data if isinstance(data, dict) else None
-        return None
+            return {}
+        return data if isinstance(data, dict) else {}
 
 
 def get_workflow_router() -> WorkflowRouter:

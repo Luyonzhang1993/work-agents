@@ -40,6 +40,22 @@ Accept: application/json
 
 ###
 
+POST http://127.0.0.1:8001/api/mcp/call
+Content-Type: application/json
+Accept: application/json
+
+{
+  "name": "mcp:alphavantage:TOOL_CALL",
+  "arguments": {
+    "tool_name": "TIME_SERIES_DAILY",
+    "arguments": {
+      "symbol": "AMD"
+    }
+  }
+}
+
+###
+
 GET http://127.0.0.1:8001/api/workflows/finance-report
 Accept: application/json
 
