@@ -71,6 +71,39 @@ Accept: application/json
 
 ###
 
+GET http://127.0.0.1:8001/api/workflows/travel-planner
+Accept: application/json
+
+###
+
+POST http://127.0.0.1:8001/api/workflows/travel-planner/run
+Content-Type: application/json
+Accept: application/json
+
+{
+  "destination": "杭州",
+  "duration_days": 3,
+  "budget_level": "comfort",
+  "traveler_type": "couple",
+  "interests": ["local_food", "culture", "city_walk"]
+}
+
+###
+
+POST http://127.0.0.1:8001/api/workflows/travel-planner/stream
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+  "destination": "京都",
+  "duration_days": 4,
+  "budget_level": "premium",
+  "traveler_type": "family",
+  "interests": ["culture", "local_food", "nature"]
+}
+
+###
+
 POST http://127.0.0.1:8001/api/chat
 Content-Type: application/json
 Accept: application/json

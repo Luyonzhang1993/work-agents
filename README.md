@@ -39,6 +39,9 @@ it, only local MCP services such as arithmetic are registered.
 - `POST /api/mcp/call` - call a registered MCP tool through stdio
 - `GET /api/workflows/finance-report` - get the finance report workflow definition
 - `POST /api/workflows/finance-report/run` - run the LLM-driven finance report workflow
+- `GET /api/workflows/travel-planner` - get the LangGraph travel demo workflow definition
+- `POST /api/workflows/travel-planner/run` - run the LangGraph travel demo workflow
+- `POST /api/workflows/travel-planner/stream` - stream LangGraph workflow events as SSE
 
 Example:
 
@@ -87,6 +90,22 @@ Finance report workflow example:
 curl -X POST http://127.0.0.1:8001/api/workflows/finance-report/run \
   -H "Content-Type: application/json" \
   -d '{"symbol":"AMD"}'
+```
+
+LangGraph travel planner workflow example:
+
+```bash
+curl -X POST http://127.0.0.1:8001/api/workflows/travel-planner/run \
+  -H "Content-Type: application/json" \
+  -d '{"destination":"杭州","duration_days":3,"budget_level":"comfort","traveler_type":"couple","interests":["local_food","culture","city_walk"]}'
+```
+
+LangGraph travel planner streaming example:
+
+```bash
+curl -N -X POST http://127.0.0.1:8001/api/workflows/travel-planner/stream \
+  -H "Content-Type: application/json" \
+  -d '{"destination":"京都","duration_days":4,"budget_level":"premium","traveler_type":"family","interests":["culture","local_food","nature"]}'
 ```
 
 LLM-planned workflow example:
@@ -156,3 +175,11 @@ execute selected MCP calls, and use those results as evidence.
 `workflow:finance_company_report`. When a workflow result has `status: failed`,
 the LLM summarization step receives the failed step and error context so it can
 explain why the workflow did not complete and suggest the next action.
+
+The LangGraph travel planner demo is defined in
+`app/services/langgraph_travel_workflow.py`. It is intentionally separate from
+the fixed finance workflow so you can compare a hand-written orchestration flow
+with a workflow runtime. The demo builds a `StateGraph`, routes to one of three
+budget branches, passes state through planning and risk-check nodes, and exposes
+the run as structured SSE events such as `workflow.step.started`,
+`workflow.step.completed`, and `assistant.message.delta`.
