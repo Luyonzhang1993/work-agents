@@ -61,12 +61,15 @@ curl -X POST http://127.0.0.1:8001/api/chat \
 
 When `use_tools` is `true`, `/api/chat` first asks a lightweight LLM router to
 choose one workflow using function calling, such as
-`workflow:finance_company_report`, or return no tool call. The router does not
-enumerate function tools or MCP tools, so adding more lower-level capabilities
-does not slow the first routing step. If a workflow is selected, the workflow
-owns all subsequent tool/MCP/LLM orchestration, and `/api/chat` only asks the LLM
-to summarize the final workflow result. If no workflow matches, `/api/chat`
-falls back to direct LLM invocation.
+`workflow:finance_company_report` or `workflow:langgraph_travel_planner`, or
+return no tool call. The router only enumerates workflow-level routing tools,
+not lower-level function tools or MCP tools, so adding more low-level
+capabilities does not slow the first routing step. If a workflow is selected,
+the workflow owns all subsequent tool/MCP/LLM orchestration, and `/api/chat`
+only asks the LLM to summarize the final workflow result. If no workflow
+matches, `/api/chat` falls back to direct LLM invocation.
+Workflow routing metadata and execution adapters are centralized in the workflow
+registry, so chat dispatch does not hard-code individual workflow IDs.
 
 MCP stdio example:
 
@@ -114,6 +117,14 @@ LLM-planned workflow example:
 curl -X POST http://127.0.0.1:8001/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"请运行 AMD 金融报告 workflow，并告诉我结果","use_tools":true}'
+```
+
+LLM-routed travel workflow example:
+
+```bash
+curl -X POST http://127.0.0.1:8001/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"帮我规划一个杭州 3 天情侣旅行，预算舒适，想吃本地美食和逛文化街区","use_tools":true}'
 ```
 
 WebSocket chat example:
@@ -171,7 +182,7 @@ Inside the workflow, finance LLM nodes receive Alpha Vantage MCP meta-tools as
 OpenAI function-calling tools, discover the needed domain tools themselves,
 execute selected MCP calls, and use those results as evidence.
 
-`/api/chat` exposes the same workflow to the lightweight LLM router as
+`/api/chat` exposes the finance workflow to the lightweight LLM router as
 `workflow:finance_company_report`. When a workflow result has `status: failed`,
 the LLM summarization step receives the failed step and error context so it can
 explain why the workflow did not complete and suggest the next action.
@@ -182,4 +193,5 @@ the fixed finance workflow so you can compare a hand-written orchestration flow
 with a workflow runtime. The demo builds a `StateGraph`, routes to one of three
 budget branches, passes state through planning and risk-check nodes, and exposes
 the run as structured SSE events such as `workflow.step.started`,
-`workflow.step.completed`, and `assistant.message.delta`.
+`workflow.step.completed`, and `assistant.message.delta`. `/api/chat` also
+exposes it to the same workflow router as `workflow:langgraph_travel_planner`.

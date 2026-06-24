@@ -7,11 +7,10 @@ from openai import AsyncOpenAI, OpenAIError
 
 from app.core.config import get_settings
 from app.schemas.chat import ChatRequest, ChatResponse, ToolCallResult
-from app.schemas.workflow import WorkflowRunRequest
 from app.services.errors import ServiceUnavailableError
 from app.services.openai_client import build_openai_client
 from app.services.workflow_router import WorkflowRouter, get_workflow_router
-from app.services.workflow_service import WorkflowService, get_workflow_service
+from app.services.workflow_registry import WorkflowRegistry, get_workflow_registry
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +18,15 @@ logger = logging.getLogger(__name__)
 class LLMService:
     def __init__(
         self,
-        workflow_service: Optional[WorkflowService] = None,
+        workflow_registry: Optional[WorkflowRegistry] = None,
         workflow_router: Optional[WorkflowRouter] = None,
     ) -> None:
         self.settings = get_settings()
         self.client: Optional[AsyncOpenAI] = None
-        self.workflow_service = workflow_service or get_workflow_service()
-        self.workflow_router = workflow_router or get_workflow_router()
+        self.workflow_registry = workflow_registry or get_workflow_registry()
+        self.workflow_router = workflow_router or get_workflow_router(
+            self.workflow_registry
+        )
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         try:
@@ -137,13 +138,7 @@ class LLMService:
         workflow_id: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        if workflow_id != "workflow:finance_company_report":
-            raise RuntimeError(f"Unknown workflow: {workflow_id}")
-
-        response = await self.workflow_service.run_finance_report(
-            WorkflowRunRequest(symbol=str(arguments.get("symbol") or "AMD"))
-        )
-        return response.model_dump()
+        return await self.workflow_registry.run(workflow_id, arguments)
 
     async def _summarize_workflow_result(
         self,

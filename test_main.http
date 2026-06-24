@@ -114,3 +114,14 @@ Accept: application/json
 }
 
 ###
+
+POST http://127.0.0.1:8001/api/chat
+Content-Type: application/json
+Accept: application/json
+
+{
+  "message": "帮我规划一个杭州 3 天情侣旅行，预算舒适，想吃本地美食和逛文化街区",
+  "use_tools": true
+}
+
+###
