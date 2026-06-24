@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.config import get_settings
 from app.services.mcp_client import MCPFraming, MCPStdioClient
 
 
@@ -74,28 +73,17 @@ class MCPRegistry:
 
 
 def get_mcp_registry() -> MCPRegistry:
-    settings = get_settings()
     services = [
         MCPServiceDefinition(
             name="arithmetic",
             module="app.mcp_server.arithmetic",
-        )
+        ),
+        MCPServiceDefinition(
+            name="marketdata",
+            module="app.mcp_server.marketdata",
+            timeout=30,
+        ),
     ]
-    if settings.alpha_vantage_api_key:
-        services.append(
-            MCPServiceDefinition(
-                name="alphavantage",
-                command=[
-                    "uvx",
-                    "--from",
-                    "marketdata-mcp-server",
-                    "marketdata-mcp",
-                    settings.alpha_vantage_api_key,
-                ],
-                framing="jsonl",
-                timeout=60,
-            )
-        )
     return MCPRegistry(
         services=services,
     )

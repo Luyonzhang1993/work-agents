@@ -83,12 +83,10 @@ class WorkflowRegistry:
                 id=f"{WORKFLOW_ID_PREFIX}finance_company_report",
                 name="finance_company_report",
                 description=(
-                    "Run the finance company report workflow. This workflow executes "
-                    "a fixed sequence: start, get company info, get news, get "
-                    "financial data, generate report, end. Company info, news, "
-                    "and financial data are independent LLM nodes that run in "
-                    "parallel before the "
-                    "LLM-generated report."
+                    "Run the LangGraph finance company report workflow. This "
+                    "workflow executes company info, news, and financial data "
+                    "LLM nodes in parallel, then joins them before generating "
+                    "the final LLM report."
                 ),
                 parameters={
                     "type": "object",

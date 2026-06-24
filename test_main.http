@@ -45,12 +45,9 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  "name": "mcp:alphavantage:TOOL_CALL",
+  "name": "mcp:marketdata:quote_snapshot",
   "arguments": {
-    "tool_name": "TIME_SERIES_DAILY",
-    "arguments": {
-      "symbol": "AMD"
-    }
+    "symbol": "AMD"
   }
 }
 
