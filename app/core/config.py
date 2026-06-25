@@ -15,6 +15,16 @@ class Settings(BaseSettings):
     )
     openai_model: str = Field(default="qwen3:8b", alias="OPENAI_MODEL")
     llm_temperature: float = Field(default=0.2, alias="LLM_TEMPERATURE")
+    langfuse_public_key: str | None = Field(default=None, alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str | None = Field(default=None, alias="LANGFUSE_SECRET_KEY")
+    langfuse_base_url: str = Field(
+        default="http://localhost:3000",
+        alias="LANGFUSE_BASE_URL",
+    )
+    langfuse_tracing_enabled: bool = Field(
+        default=True,
+        alias="LANGFUSE_TRACING_ENABLED",
+    )
     host: str = Field(default="127.0.0.1", alias="HOST")
     port: int = Field(default=8001, alias="PORT")
     reload: bool = Field(default=False, alias="RELOAD")

@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas.workflow import (
     TravelWorkflowRunRequest,
+    WorkflowCatalogResponse,
     WorkflowDefinitionResponse,
     WorkflowRunRequest,
     WorkflowRunResponse,
@@ -15,11 +16,19 @@ from app.services.langgraph_travel_workflow import (
     get_langgraph_travel_workflow_service,
 )
 from app.services.mcp_client import MCPError
+from app.services.workflow_registry import WorkflowRegistry, get_workflow_registry
 from app.services.workflow_service import WorkflowService, get_workflow_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
+
+
+@router.get("", response_model=WorkflowCatalogResponse)
+async def list_workflows(
+    registry: WorkflowRegistry = Depends(get_workflow_registry),
+) -> WorkflowCatalogResponse:
+    return WorkflowCatalogResponse(workflows=registry.catalog())
 
 
 @router.get("/finance-report", response_model=WorkflowDefinitionResponse)

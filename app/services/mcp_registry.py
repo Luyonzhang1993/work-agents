@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.services.mcp_client import MCPFraming, MCPStdioClient
+from app.services.observability import get_observability_client
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class MCPToolReference:
 class MCPRegistry:
     def __init__(self, services: list[MCPServiceDefinition]) -> None:
         self.services = {service.name: service for service in services}
+        self.observability = get_observability_client()
 
     async def list_tools(self) -> list[MCPToolReference]:
         tools: list[MCPToolReference] = []
@@ -49,7 +51,22 @@ class MCPRegistry:
     ) -> dict[str, Any]:
         service_name, tool_name = self._parse_tool_id(tool_id)
         client = self._client(service_name)
-        return await client.call_tool(tool_name, arguments)
+        with self.observability.start_span(
+            f"mcp.{service_name}.{tool_name}",
+            input=arguments,
+            metadata={
+                "tool_id": tool_id,
+                "service": service_name,
+                "tool": tool_name,
+            },
+        ) as observation:
+            try:
+                result = await client.call_tool(tool_name, arguments)
+                observation.update(output=result)
+                return result
+            except Exception as exc:
+                observation.record_exception(exc)
+                raise
 
     def _client(self, service_name: str) -> MCPStdioClient:
         service = self.services.get(service_name)

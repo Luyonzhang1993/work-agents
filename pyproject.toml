@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "FastAPI service for OpenAI LLM and function calling."
 requires-python = ">=3.10"
 dependencies = [
+    "aiosqlite>=0.20.0",
     "fastapi>=0.115.0",
+    "langfuse>=3.0.0",
     "langgraph>=0.2.60",
     "openai>=1.59.0",
     "pydantic-settings>=2.7.0",
@@ -21,7 +23,7 @@ dev = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

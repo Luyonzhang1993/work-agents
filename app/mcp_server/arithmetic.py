@@ -1,7 +1,7 @@
 import json
 import sys
-from typing import Any, Callable
-
+from collections.abc import Callable
+from typing import Any
 
 JSONRPC_VERSION = "2.0"
 

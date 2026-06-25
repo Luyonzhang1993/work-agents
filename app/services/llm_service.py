@@ -1,70 +1,98 @@
 import json
 import logging
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
 
 from app.core.config import get_settings
 from app.schemas.chat import ChatRequest, ChatResponse, ToolCallResult
 from app.services.errors import ServiceUnavailableError
+from app.services.llm_utils import extract_usage_details
+from app.services.observability import get_observability_client
 from app.services.openai_client import build_openai_client
-from app.services.workflow_router import WorkflowRouter, get_workflow_router
 from app.services.workflow_registry import WorkflowRegistry, get_workflow_registry
+from app.services.workflow_router import WorkflowRouter, get_workflow_router
 
 logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    def __init__(
-        self,
-        workflow_registry: Optional[WorkflowRegistry] = None,
-        workflow_router: Optional[WorkflowRouter] = None,
-    ) -> None:
+    @property
+    def _registry(self) -> WorkflowRegistry:
+        return get_workflow_registry()
+
+    @property
+    def _router(self) -> WorkflowRouter:
+        return get_workflow_router(self._registry)
+
+    def __init__(self) -> None:
         self.settings = get_settings()
-        self.client: Optional[AsyncOpenAI] = None
-        self.workflow_registry = workflow_registry or get_workflow_registry()
-        self.workflow_router = workflow_router or get_workflow_router(
-            self.workflow_registry
-        )
+        self.client: AsyncOpenAI | None = None
+        self.observability = get_observability_client()
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
-        try:
-            client = self._client()
-            if request.use_tools:
-                workflow_response = await self._try_route_workflow(client, request)
-                if workflow_response is not None:
-                    return workflow_response
+        with self.observability.start_span(
+            "chat.request",
+            input=self._trace_chat_input(request),
+            metadata={
+                "model": self.settings.openai_model,
+                "use_tools": request.use_tools,
+                "history_count": len(request.history),
+            },
+        ) as observation:
+            observation.update_trace(
+                name="chat.request",
+                input=self._trace_chat_input(request),
+                metadata={
+                    "environment": self.settings.environment,
+                    "model": self.settings.openai_model,
+                },
+            )
+            try:
+                client = self._client()
+                if request.use_tools:
+                    workflow_response = await self._try_route_workflow(client, request)
+                    if workflow_response is not None:
+                        observation.update(output=workflow_response.model_dump())
+                        observation.update_trace(output=workflow_response.model_dump())
+                        return workflow_response
 
-            return await self._direct_llm_invoke(client, request)
-        except ServiceUnavailableError:
-            raise
-        except (OpenAIError, TimeoutError) as exc:
-            logger.exception("LLM dependency request failed")
-            raise ServiceUnavailableError(
-                "LLM service is temporarily unavailable",
-                exc,
-            ) from exc
-        except Exception as exc:
-            logger.exception("Unexpected chat service failure")
-            raise ServiceUnavailableError(
-                "Chat service failed unexpectedly",
-                exc,
-            ) from exc
+                response = await self._direct_llm_invoke(client, request)
+                observation.update(output=response.model_dump())
+                observation.update_trace(output=response.model_dump())
+                return response
+            except ServiceUnavailableError as exc:
+                observation.record_exception(exc)
+                raise
+            except (OpenAIError, TimeoutError) as exc:
+                observation.record_exception(exc)
+                logger.exception("LLM dependency request failed")
+                raise ServiceUnavailableError(
+                    "LLM service is temporarily unavailable",
+                    exc,
+                ) from exc
+            except Exception as exc:
+                observation.record_exception(exc)
+                logger.exception("Unexpected chat service failure")
+                raise ServiceUnavailableError(
+                    "Chat service failed unexpectedly",
+                    exc,
+                ) from exc
 
     async def _try_route_workflow(
         self,
         client: AsyncOpenAI,
         request: ChatRequest,
-    ) -> Optional[ChatResponse]:
+    ) -> ChatResponse | None:
         try:
-            route = await self.workflow_router.route(
+            route = await self._router.route(
                 client=client,
                 model=self.settings.openai_model,
                 message=request.message,
                 history=request.history,
             )
-        except Exception as exc:
+        except Exception:
             logger.warning(
                 "Workflow routing failed; falling back to direct LLM invoke",
                 exc_info=True,
@@ -106,12 +134,23 @@ class LLMService:
         client: AsyncOpenAI,
         request: ChatRequest,
     ) -> ChatResponse:
-        response = await client.chat.completions.create(
+        messages = self._build_messages(request)
+        with self.observability.start_generation(
+            "llm.direct_chat",
             model=self.settings.openai_model,
-            messages=self._build_messages(request),
-            temperature=self.settings.llm_temperature,
-            timeout=30,
-        )
+            input=messages,
+            metadata={"temperature": self.settings.llm_temperature},
+        ) as generation:
+            response = await client.chat.completions.create(
+                model=self.settings.openai_model,
+                messages=messages,
+                temperature=self.settings.llm_temperature,
+                timeout=30,
+            )
+            generation.update(
+                output=response.model_dump(),
+                usage_details=extract_usage_details(response),
+            )
         message = response.choices[0].message
 
         return ChatResponse(
@@ -138,7 +177,7 @@ class LLMService:
         workflow_id: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        return await self.workflow_registry.run(workflow_id, arguments)
+        return await self._registry.run(workflow_id, arguments)
 
     async def _summarize_workflow_result(
         self,
@@ -150,31 +189,45 @@ class LLMService:
             workflow_result.model_dump(),
             ensure_ascii=False,
         )
-        response = await client.chat.completions.create(
-            model=self.settings.openai_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Answer the user using only the provided workflow result. "
-                        "If the workflow result has status=failed or an error "
-                        "field, analyze the failed step, likely reason, and "
-                        "actionable next step."
-                    ),
-                },
-                *[
-                    {"role": message.role, "content": message.content}
-                    for message in request.history
-                ],
-                {"role": "user", "content": request.message},
-                {
-                    "role": "user",
-                    "content": f"Workflow result:\n{serialized_workflow_result}",
-                },
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Answer the user using only the provided workflow result. "
+                    "If the workflow result has status=failed or an error "
+                    "field, analyze the failed step, likely reason, and "
+                    "actionable next step."
+                ),
+            },
+            *[
+                {"role": message.role, "content": message.content}
+                for message in request.history
             ],
-            temperature=self.settings.llm_temperature,
-            timeout=30,
-        )
+            {"role": "user", "content": request.message},
+            {
+                "role": "user",
+                "content": f"Workflow result:\n{serialized_workflow_result}",
+            },
+        ]
+        with self.observability.start_generation(
+            "llm.summarize_workflow_result",
+            model=self.settings.openai_model,
+            input=messages,
+            metadata={
+                "workflow": workflow_result.name,
+                "temperature": self.settings.llm_temperature,
+            },
+        ) as generation:
+            response = await client.chat.completions.create(
+                model=self.settings.openai_model,
+                messages=messages,
+                temperature=self.settings.llm_temperature,
+                timeout=30,
+            )
+            generation.update(
+                output=response.model_dump(),
+                usage_details=extract_usage_details(response),
+            )
         return response.choices[0].message.content or ""
 
     async def _safe_summarize_workflow_result(
@@ -198,6 +251,13 @@ class LLMService:
                 workflow_result.model_dump(),
                 ensure_ascii=False,
             )
+
+    def _trace_chat_input(self, request: ChatRequest) -> dict[str, Any]:
+        return {
+            "message": request.message,
+            "history": [message.model_dump() for message in request.history],
+            "use_tools": request.use_tools,
+        }
 
 
 @lru_cache

@@ -3,8 +3,7 @@ import json
 import subprocess
 import sys
 from itertools import count
-from typing import Any, Literal, Optional
-
+from typing import Any, Literal
 
 MCPFraming = Literal["headers", "jsonl"]
 
@@ -61,7 +60,7 @@ class _MCPProcess:
         self.command = command
         self.framing = framing
         self.timeout = timeout
-        self.process: Optional[asyncio.subprocess.Process] = None
+        self.process: asyncio.subprocess.Process | None = None
 
     async def __aenter__(self) -> "_MCPProcess":
         try:
@@ -109,7 +108,7 @@ class _MCPProcess:
         self,
         request_id: int,
         method: str,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             await asyncio.wait_for(
@@ -143,7 +142,7 @@ class _MCPProcess:
     async def notify(
         self,
         method: str,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         await self.write_message(
             {

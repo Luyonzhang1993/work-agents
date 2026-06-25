@@ -3,6 +3,17 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class WorkflowCatalogItem(BaseModel):
+    id: str
+    name: str
+    description: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowCatalogResponse(BaseModel):
+    workflows: list[WorkflowCatalogItem]
+
+
 class WorkflowStepDefinition(BaseModel):
     id: str
     name: str

@@ -3,8 +3,8 @@ import json
 import sys
 import urllib.parse
 import urllib.request
-from typing import Any, Callable
-
+from collections.abc import Callable
+from typing import Any
 
 JSONRPC_VERSION = "2.0"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"

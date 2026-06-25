@@ -3,5 +3,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .env
+.local/
 .DS_Store
 .idea/

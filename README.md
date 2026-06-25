@@ -25,6 +25,23 @@ PORT=8001
 RELOAD=false
 ```
 
+## Langfuse Observability
+
+The service can send traces to a local or hosted Langfuse instance. Configure
+these values in `.env`:
+
+```bash
+LANGFUSE_BASE_URL=http://localhost:3000
+LANGFUSE_PUBLIC_KEY=pk-lf-your-public-key
+LANGFUSE_SECRET_KEY=sk-lf-your-secret-key
+LANGFUSE_TRACING_ENABLED=true
+```
+
+Tracing is optional. If the Langfuse SDK is not installed, credentials are
+missing, or Langfuse is temporarily unavailable, chat and workflow execution
+continue without observability. The current instrumentation records chat
+requests, workflow routing, workflow runs, MCP tool calls, and LLM generations.
+
 Local MCP services such as arithmetic and marketdata are registered by default.
 The marketdata MCP server uses Yahoo Finance public endpoints for quote,
 history, financial summary, and news context.

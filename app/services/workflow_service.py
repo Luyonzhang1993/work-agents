@@ -1,4 +1,7 @@
+import asyncio
 import json
+import re
+from collections.abc import AsyncIterator
 from typing import Any, TypedDict
 
 from openai import AsyncOpenAI
@@ -6,14 +9,16 @@ from openai import AsyncOpenAI
 from app.core.config import get_settings
 from app.schemas.workflow import (
     WorkflowDefinitionResponse,
+    WorkflowEvent,
     WorkflowRunRequest,
     WorkflowRunResponse,
     WorkflowStepDefinition,
     WorkflowStepResult,
 )
+from app.services.llm_utils import extract_usage_details, loads_json_object
 from app.services.mcp_registry import MCPRegistry, get_mcp_registry
+from app.services.observability import get_observability_client
 from app.services.openai_client import build_openai_client
-
 
 FINANCE_REPORT_WORKFLOW_ID = "finance_company_report"
 MAX_MCP_RESULT_CHARS = 4000
@@ -49,6 +54,12 @@ FINANCE_REPORT_STEPS = [
         tool="langgraph:get_financial_data",
     ),
     WorkflowStepDefinition(
+        id="check_research",
+        name="检查研究结果",
+        type="langgraph_node",
+        tool="langgraph:check_research",
+    ),
+    WorkflowStepDefinition(
         id="generate_report",
         name="生成报告",
         type="langgraph_node",
@@ -59,6 +70,20 @@ FINANCE_REPORT_STEPS = [
 
 
 PUBLIC_FINANCE_STEP_NAMES = {step.id: step.name for step in FINANCE_REPORT_STEPS}
+
+
+def _split_stream_text(text: str, chunk_size: int = 40) -> list[str]:
+    """Split text into small chunks for simulated streaming."""
+    # Split by Chinese/English sentence boundaries where possible
+    parts = re.split(r"(?<=[。！？\n.!?])\s*", text)
+    chunks: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        # Further split long parts by character chunks
+        for i in range(0, len(part), chunk_size):
+            chunks.append(part[i : i + chunk_size])
+    return chunks if chunks else [text]
 
 
 class FinanceReportWorkflowState(TypedDict, total=False):
@@ -83,6 +108,7 @@ class WorkflowService:
         self.settings = get_settings()
         self.llm_client = llm_client
         self.mcp_registry = mcp_registry or get_mcp_registry()
+        self.observability = get_observability_client()
 
     def finance_report_definition(self) -> WorkflowDefinitionResponse:
         return WorkflowDefinitionResponse(
@@ -100,6 +126,20 @@ class WorkflowService:
         request: WorkflowRunRequest,
     ) -> WorkflowRunResponse:
         symbol = request.symbol.upper()
+        with self.observability.start_span(
+            "workflow.finance_company_report",
+            input={"symbol": symbol},
+            metadata={"workflow_id": FINANCE_REPORT_WORKFLOW_ID},
+        ) as observation:
+            try:
+                response = await self._run_finance_report(symbol)
+                observation.update(output=response.model_dump())
+                return response
+            except Exception as exc:
+                observation.record_exception(exc)
+                raise
+
+    async def _run_finance_report(self, symbol: str) -> WorkflowRunResponse:
         step_results: list[WorkflowStepResult] = []
         final_state: FinanceReportWorkflowState = {}
 
@@ -139,6 +179,125 @@ class WorkflowService:
             steps=step_results,
             report=str(final_state.get("report", "")),
         )
+
+    async def stream_finance_report(
+        self,
+        symbol: str,
+    ) -> AsyncIterator[WorkflowEvent]:
+        """Stream finance workflow events as they happen."""
+        sequence = 0
+
+        yield WorkflowEvent(
+            type="workflow.started",
+            data={
+                "workflow_id": FINANCE_REPORT_WORKFLOW_ID,
+                "input": {"symbol": symbol},
+                "sequence": sequence,
+            },
+        )
+        sequence += 1
+
+        final_state: FinanceReportWorkflowState = {"symbol": symbol}
+        try:
+            async for mode, chunk in self._astream_finance_graph(
+                {"symbol": symbol},
+            ):
+                if mode == "custom":
+                    yield WorkflowEvent(
+                        type=str(chunk.get("type", "workflow.event")),
+                        data={
+                            **chunk.get("data", {}),
+                            "sequence": sequence,
+                        },
+                    )
+                    sequence += 1
+                    continue
+
+                if mode != "updates" or not isinstance(chunk, dict):
+                    continue
+
+                for node_id, output in chunk.items():
+                    if not isinstance(output, dict):
+                        output = {"value": output}
+                    final_state.update(output)
+                    yield WorkflowEvent(
+                        type="workflow.step.completed",
+                        data={
+                            "step_id": node_id,
+                            "name": PUBLIC_FINANCE_STEP_NAMES.get(node_id, node_id),
+                            "output": output,
+                            "sequence": sequence,
+                        },
+                    )
+                    sequence += 1
+        except Exception as exc:
+            yield WorkflowEvent(
+                type="workflow.failed",
+                data={
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                    "sequence": sequence,
+                },
+            )
+            return
+
+        report = str(final_state.get("report", ""))
+        for token in _split_stream_text(report):
+            yield WorkflowEvent(
+                type="assistant.message.delta",
+                data={"content": token, "sequence": sequence},
+            )
+            sequence += 1
+            await asyncio.sleep(0.02)  # simulate streaming pace
+
+        yield WorkflowEvent(
+            type="assistant.message.completed",
+            data={"content": report, "sequence": sequence},
+        )
+        sequence += 1
+
+        yield WorkflowEvent(
+            type="workflow.completed",
+            data={
+                "workflow_id": FINANCE_REPORT_WORKFLOW_ID,
+                "state": final_state,
+                "sequence": sequence,
+            },
+        )
+
+    async def _astream_finance_graph(
+        self,
+        state: dict[str, Any],
+    ) -> AsyncIterator[tuple[str, Any]]:
+        async for item in self._compile_finance_report_graph().astream(
+            state,
+            stream_mode=["custom", "updates"],
+        ):
+            if isinstance(item, tuple) and len(item) == 2:
+                yield item
+            else:
+                yield "updates", item
+
+    def _write_custom(
+        self,
+        event_type: str,
+        step_id: str,
+        name: str,
+        message: str,
+    ) -> None:
+        try:
+            from langgraph.config import get_stream_writer
+        except ImportError:
+            return
+        writer = get_stream_writer()
+        writer({
+            "type": event_type,
+            "data": {
+                "step_id": step_id,
+                "name": name,
+                "message": message,
+            },
+        })
 
     def _compile_finance_report_graph(self) -> Any:
         try:
@@ -180,12 +339,24 @@ class WorkflowService:
         self,
         state: FinanceReportWorkflowState,
     ) -> dict[str, Any]:
+        self._write_custom(
+            "workflow.step.started",
+            "start",
+            "开始",
+            f"准备获取 {state['symbol']} 的金融数据...",
+        )
         return {"symbol": state["symbol"]}
 
     async def _company_info_node(
         self,
         state: FinanceReportWorkflowState,
     ) -> dict[str, Any]:
+        self._write_custom(
+            "workflow.step.started",
+            "get_company_info",
+            "获取公司信息",
+            f"正在查询 {state['symbol']} 的公司档案和行情...",
+        )
         try:
             return {"company_info": await self._get_company_info(state["symbol"])}
         except Exception as exc:
@@ -195,6 +366,12 @@ class WorkflowService:
         self,
         state: FinanceReportWorkflowState,
     ) -> dict[str, Any]:
+        self._write_custom(
+            "workflow.step.started",
+            "get_company_news",
+            "获取新闻",
+            f"正在收集 {state['symbol']} 的最新动态...",
+        )
         try:
             return {"company_news": await self._get_company_news(state["symbol"])}
         except Exception as exc:
@@ -204,6 +381,12 @@ class WorkflowService:
         self,
         state: FinanceReportWorkflowState,
     ) -> dict[str, Any]:
+        self._write_custom(
+            "workflow.step.started",
+            "get_financial_data",
+            "获取财务数据",
+            f"正在获取 {state['symbol']} 的财务指标...",
+        )
         try:
             return {"financial_data": await self._get_financial_data(state["symbol"])}
         except Exception as exc:
@@ -213,6 +396,12 @@ class WorkflowService:
         self,
         state: FinanceReportWorkflowState,
     ) -> dict[str, Any]:
+        self._write_custom(
+            "workflow.step.started",
+            "check_research",
+            "检查研究结果",
+            "正在汇总三个并行节点的结果...",
+        )
         return {
             "research_failed": any(
                 key in state
@@ -228,6 +417,12 @@ class WorkflowService:
         self,
         state: FinanceReportWorkflowState,
     ) -> dict[str, Any]:
+        self._write_custom(
+            "workflow.step.started",
+            "generate_report",
+            "生成报告",
+            "正在通过 LLM 生成中文金融分析报告...",
+        )
         try:
             return await self._generate_report(
                 state["symbol"],
@@ -599,7 +794,7 @@ class WorkflowService:
         user_prompt: str,
     ) -> dict[str, Any]:
         content = await self._complete_text(system_prompt, user_prompt, temperature=0)
-        return self._loads_json_object(content)
+        return loads_json_object(content)
 
     async def _complete_text(
         self,
@@ -608,75 +803,38 @@ class WorkflowService:
         temperature: float | None = None,
     ) -> str:
         client = self._client()
-        response = await client.chat.completions.create(
-            model=self.settings.openai_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=(
-                self.settings.llm_temperature
-                if temperature is None
-                else temperature
-            ),
-            timeout=60,
+        selected_temperature = (
+            self.settings.llm_temperature if temperature is None else temperature
         )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        with self.observability.start_generation(
+            "llm.workflow_node",
+            model=self.settings.openai_model,
+            input=messages,
+            metadata={
+                "workflow_id": FINANCE_REPORT_WORKFLOW_ID,
+                "temperature": selected_temperature,
+            },
+        ) as generation:
+            response = await client.chat.completions.create(
+                model=self.settings.openai_model,
+                messages=messages,
+                temperature=selected_temperature,
+                timeout=60,
+            )
+            generation.update(
+                output=response.model_dump(),
+                usage_details=extract_usage_details(response),
+            )
         return response.choices[0].message.content or ""
 
     def _client(self) -> AsyncOpenAI:
         if self.llm_client is None:
             self.llm_client = build_openai_client(self.settings)
         return self.llm_client
-
-    def _loads_json_object(self, content: str) -> dict[str, Any]:
-        cleaned_content = content.strip()
-        if cleaned_content.startswith("```"):
-            cleaned_content = cleaned_content.strip("`")
-            if cleaned_content.lower().startswith("json"):
-                cleaned_content = cleaned_content[4:]
-            cleaned_content = cleaned_content.strip()
-
-        try:
-            data = json.loads(cleaned_content)
-        except json.JSONDecodeError:
-            data = self._first_json_object(cleaned_content)
-
-        if not isinstance(data, dict):
-            raise ValueError("LLM response did not contain a JSON object")
-        return data
-
-    def _first_json_object(self, content: str) -> dict[str, Any] | None:
-        start = content.find("{")
-        if start == -1:
-            return None
-
-        depth = 0
-        in_string = False
-        escaped = False
-        for index in range(start, len(content)):
-            character = content[index]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif character == "\\":
-                    escaped = True
-                elif character == '"':
-                    in_string = False
-                continue
-
-            if character == '"':
-                in_string = True
-            elif character == "{":
-                depth += 1
-            elif character == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        data = json.loads(content[start : index + 1])
-                    except json.JSONDecodeError:
-                        return None
-                    return data if isinstance(data, dict) else None
-        return None
 
     def _step_result(
         self,

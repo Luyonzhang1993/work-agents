@@ -12,7 +12,7 @@ from app.schemas.workflow import (
     WorkflowStepDefinition,
     WorkflowStepResult,
 )
-
+from app.services.observability import get_observability_client
 
 TRAVEL_PLANNER_WORKFLOW_ID = "langgraph_travel_planner"
 
@@ -83,6 +83,9 @@ class TravelWorkflowState(TypedDict, total=False):
 
 
 class LangGraphTravelWorkflowService:
+    def __init__(self) -> None:
+        self.observability = get_observability_client()
+
     def definition(self) -> WorkflowDefinitionResponse:
         return WorkflowDefinitionResponse(
             id=TRAVEL_PLANNER_WORKFLOW_ID,
@@ -95,6 +98,23 @@ class LangGraphTravelWorkflowService:
         )
 
     async def run(
+        self,
+        request: TravelWorkflowRunRequest,
+    ) -> WorkflowRunResponse:
+        with self.observability.start_span(
+            "workflow.langgraph_travel_planner.run",
+            input=request.model_dump(),
+            metadata={"workflow_id": TRAVEL_PLANNER_WORKFLOW_ID},
+        ) as observation:
+            try:
+                response = await self._run(request)
+                observation.update(output=response.model_dump())
+                return response
+            except Exception as exc:
+                observation.record_exception(exc)
+                raise
+
+    async def _run(
         self,
         request: TravelWorkflowRunRequest,
     ) -> WorkflowRunResponse:
@@ -153,6 +173,24 @@ class LangGraphTravelWorkflowService:
         )
 
     async def stream(
+        self,
+        request: TravelWorkflowRunRequest,
+    ) -> AsyncIterator[WorkflowEvent]:
+        with self.observability.start_span(
+            "workflow.langgraph_travel_planner.stream",
+            input=request.model_dump(),
+            metadata={"workflow_id": TRAVEL_PLANNER_WORKFLOW_ID},
+        ) as observation:
+            try:
+                async for event in self._stream(request):
+                    if event.type == "workflow.completed":
+                        observation.update(output=event.data)
+                    yield event
+            except Exception as exc:
+                observation.record_exception(exc)
+                raise
+
+    async def _stream(
         self,
         request: TravelWorkflowRunRequest,
     ) -> AsyncIterator[WorkflowEvent]:
@@ -476,7 +514,15 @@ class LangGraphTravelWorkflowService:
         return activity_map.get(interest, fallback).get(slot, fallback[slot])
 
     def _split_stream_text(self, text: str) -> list[str]:
-        return [part for part in re.split(r"(\s+)", text) if part]
+        # Split by sentence boundaries first, then chunk by size
+        parts = re.split(r"(?<=[。！？\n.!?])\s*", text)
+        chunks: list[str] = []
+        for part in parts:
+            if not part:
+                continue
+            for i in range(0, len(part), 40):
+                chunks.append(part[i : i + 40])
+        return chunks if chunks else [text]
 
     def _event(
         self,

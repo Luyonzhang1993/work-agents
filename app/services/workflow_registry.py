@@ -1,27 +1,31 @@
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
-from app.schemas.workflow import TravelWorkflowRunRequest, WorkflowRunRequest
 from app.services.langgraph_travel_workflow import (
     LangGraphTravelWorkflowService,
     get_langgraph_travel_workflow_service,
 )
+from app.services.workflow_adapters import (
+    FinanceReportWorkflowAdapter,
+    TravelPlannerWorkflowAdapter,
+)
+from app.services.workflow_runtime import WorkflowRuntime
 from app.services.workflow_service import WorkflowService, get_workflow_service
-
 
 WORKFLOW_ID_PREFIX = "workflow:"
 
 
 @dataclass(frozen=True)
 class WorkflowRegistration:
+    """A registered workflow backed by a WorkflowRuntime adapter."""
+
     id: str
     name: str
     description: str
     parameters: dict[str, Any]
     route_function_name: str
     route_parameters: dict[str, Any]
-    run: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+    runtime: WorkflowRuntime
 
     def catalog_item(self) -> dict[str, Any]:
         return {
@@ -44,49 +48,68 @@ class WorkflowRegistration:
 
 
 class WorkflowRegistry:
+    """Central registry of all registered workflows.
+
+    Hardcoded system workflows and DB-persisted user workflows are
+    combined into a single catalog.
+    """
+
     def __init__(
         self,
-        workflow_service: Optional[WorkflowService] = None,
-        travel_workflow_service: Optional[LangGraphTravelWorkflowService] = None,
+        workflow_service: WorkflowService | None = None,
+        travel_workflow_service: LangGraphTravelWorkflowService | None = None,
+        dynamic_adapters: list[WorkflowRuntime] | None = None,
     ) -> None:
         self.workflow_service = workflow_service or get_workflow_service()
         self.travel_workflow_service = (
             travel_workflow_service or get_langgraph_travel_workflow_service()
         )
-        self._registrations = self._build_registrations()
-        self._by_id = {
-            registration.id: registration for registration in self._registrations
-        }
-        self._workflow_ids_by_route_function = {
-            registration.route_function_name: registration.id
-            for registration in self._registrations
-        }
+
+        builtins = self._build_system_registrations()
+        dynamics = self._build_dynamic_registrations(dynamic_adapters or [])
+        self._registrations = builtins + dynamics
+        self._rebuild_lookups()
+
+    # ── Public API ──
 
     def catalog(self) -> list[dict[str, Any]]:
-        return [registration.catalog_item() for registration in self._registrations]
+        return [r.catalog_item() for r in self._registrations]
 
     def route_tools(self) -> list[dict[str, Any]]:
-        return [registration.route_tool() for registration in self._registrations]
+        return [r.route_tool() for r in self._registrations]
 
     def workflow_id_for_route_function(self, function_name: str) -> str | None:
         return self._workflow_ids_by_route_function.get(function_name)
 
-    async def run(self, workflow_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        registration = self._by_id.get(workflow_id)
-        if registration is None:
-            raise RuntimeError(f"Unknown workflow: {workflow_id}")
-        return await registration.run(arguments)
+    def registration(self, workflow_id: str) -> WorkflowRegistration | None:
+        return self._by_id.get(workflow_id)
 
-    def _build_registrations(self) -> list[WorkflowRegistration]:
+    async def run(self, workflow_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        reg = self._by_id.get(workflow_id)
+        if reg is None:
+            raise RuntimeError(f"Unknown workflow: {workflow_id}")
+        response = await reg.runtime.run(arguments)
+        return response.model_dump()
+
+    # ── Internal ──
+
+    def _rebuild_lookups(self) -> None:
+        self._by_id = {r.id: r for r in self._registrations}
+        self._workflow_ids_by_route_function = {
+            r.route_function_name: r.id for r in self._registrations
+        }
+
+    def _build_system_registrations(self) -> list[WorkflowRegistration]:
+        finance = FinanceReportWorkflowAdapter(self.workflow_service)
+        travel = TravelPlannerWorkflowAdapter(self.travel_workflow_service)
         return [
             WorkflowRegistration(
                 id=f"{WORKFLOW_ID_PREFIX}finance_company_report",
                 name="finance_company_report",
                 description=(
-                    "Run the LangGraph finance company report workflow. This "
-                    "workflow executes company info, news, and financial data "
-                    "LLM nodes in parallel, then joins them before generating "
-                    "the final LLM report."
+                    "Run the LangGraph finance company report workflow. "
+                    "Parallel company info, news, and financial data nodes "
+                    "join into an LLM-generated report."
                 ),
                 parameters={
                     "type": "object",
@@ -105,65 +128,49 @@ class WorkflowRegistry:
                     "properties": {
                         "symbol": {
                             "type": "string",
-                            "description": "Stock ticker symbol. Defaults to AMD.",
+                            "description": "Stock ticker symbol.",
                         }
                     },
                     "required": ["symbol"],
                     "additionalProperties": False,
                 },
-                run=self._run_finance_company_report,
+                runtime=finance,
             ),
             WorkflowRegistration(
                 id=f"{WORKFLOW_ID_PREFIX}langgraph_travel_planner",
                 name="langgraph_travel_planner",
                 description=(
-                    "Run the LangGraph travel planner workflow. This workflow plans a "
-                    "trip from destination, duration, budget level, traveler type, and "
-                    "interests. It demonstrates a workflow runtime with state passing, "
-                    "conditional budget branches, risk checking, and final itinerary "
-                    "synthesis."
+                    "LangGraph travel planner: destination, days, budget "
+                    "branch, daily itinerary, risk check, final synthesis."
                 ),
                 parameters={
                     "type": "object",
                     "properties": {
                         "destination": {
                             "type": "string",
-                            "description": "Travel destination. Defaults to 杭州.",
+                            "description": "Travel destination.",
                             "default": "杭州",
                         },
                         "duration_days": {
                             "type": "integer",
-                            "description": (
-                                "Trip duration in days, from 1 to 14. Defaults to 3."
-                            ),
+                            "description": "Trip duration in days (1-14).",
                             "default": 3,
                         },
                         "budget_level": {
                             "type": "string",
                             "enum": ["budget", "comfort", "premium"],
-                            "description": (
-                                "Budget preference. Use budget for low-cost trips, "
-                                "comfort for balanced trips, and premium for high-end "
-                                "trips. Defaults to comfort."
-                            ),
+                            "description": "Budget level.",
                             "default": "comfort",
                         },
                         "traveler_type": {
                             "type": "string",
-                            "description": (
-                                "Traveler profile, such as solo, couple, family, "
-                                "friends, or business. Defaults to couple."
-                            ),
+                            "description": "solo, couple, family, friends, business.",
                             "default": "couple",
                         },
                         "interests": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": (
-                                "Interests such as local_food, culture, nature, "
-                                "city_walk, shopping, museums, or nightlife."
-                            ),
-                            "default": ["local_food", "culture", "city_walk"],
+                            "description": "local_food, culture, nature, city_walk, etc.",
                         },
                     },
                     "additionalProperties": False,
@@ -172,38 +179,16 @@ class WorkflowRegistry:
                 route_parameters={
                     "type": "object",
                     "properties": {
-                        "destination": {
-                            "type": "string",
-                            "description": "Travel destination. Defaults to 杭州.",
-                        },
-                        "duration_days": {
-                            "type": "integer",
-                            "description": (
-                                "Trip duration in days, from 1 to 14. Defaults to 3."
-                            ),
-                        },
+                        "destination": {"type": "string"},
+                        "duration_days": {"type": "integer"},
                         "budget_level": {
                             "type": "string",
                             "enum": ["budget", "comfort", "premium"],
-                            "description": (
-                                "Budget preference: budget, comfort, or premium. "
-                                "Defaults to comfort."
-                            ),
                         },
-                        "traveler_type": {
-                            "type": "string",
-                            "description": (
-                                "Traveler profile, such as solo, couple, family, "
-                                "friends, or business. Defaults to couple."
-                            ),
-                        },
+                        "traveler_type": {"type": "string"},
                         "interests": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": (
-                                "Interests such as local_food, culture, nature, "
-                                "city_walk, shopping, museums, or nightlife."
-                            ),
                         },
                     },
                     "required": [
@@ -215,56 +200,89 @@ class WorkflowRegistry:
                     ],
                     "additionalProperties": False,
                 },
-                run=self._run_langgraph_travel_planner,
+                runtime=travel,
             ),
         ]
 
-    async def _run_finance_company_report(
+    def _build_dynamic_registrations(
         self,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        response = await self.workflow_service.run_finance_report(
-            WorkflowRunRequest(symbol=str(arguments.get("symbol") or "AMD"))
-        )
-        return response.model_dump()
+        adapters: list[WorkflowRuntime],
+    ) -> list[WorkflowRegistration]:
+        regs: list[WorkflowRegistration] = []
+        for adapter in adapters:
+            defn = adapter.definition()
+            wf_id = adapter.workflow_id
+            # Derive a short name from the workflow id
+            short_name = wf_id.replace(WORKFLOW_ID_PREFIX, "")
+            # Collect parameters from the definition if available
+            params = _extract_parameters(defn)
 
-    async def _run_langgraph_travel_planner(
-        self,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        response = await self.travel_workflow_service.run(
-            TravelWorkflowRunRequest(
-                destination=str(arguments.get("destination") or "杭州"),
-                duration_days=self._int_argument(
-                    arguments.get("duration_days"),
-                    default=3,
-                ),
-                budget_level=self._budget_level_argument(arguments.get("budget_level")),
-                traveler_type=str(arguments.get("traveler_type") or "couple"),
-                interests=self._interests_argument(arguments.get("interests")),
+            regs.append(
+                WorkflowRegistration(
+                    id=wf_id,
+                    name=short_name,
+                    description=defn.description,
+                    parameters=params,
+                    route_function_name=f"route_dynamic_{short_name}",
+                    route_parameters=_make_route_params(params),
+                    runtime=adapter,
+                )
             )
-        )
-        return response.model_dump()
+        return regs
 
-    def _int_argument(self, value: Any, default: int) -> int:
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return default
-        return min(max(parsed, 1), 14)
 
-    def _budget_level_argument(self, value: Any) -> str:
-        budget_level = str(value or "comfort")
-        if budget_level in {"budget", "comfort", "premium"}:
-            return budget_level
-        return "comfort"
+# ── helpers ──
 
-    def _interests_argument(self, value: Any) -> list[str]:
-        if not isinstance(value, list):
-            return ["local_food", "culture", "city_walk"]
-        interests = [str(item).strip() for item in value if str(item).strip()]
-        return interests or ["local_food", "culture", "city_walk"]
+
+def _extract_parameters(defn: Any) -> dict[str, Any]:
+    """Try to extract a JSON-Schema-like parameters block from the definition."""
+    # The definition may have a "definition" field with "parameters" inside
+    raw = getattr(defn, "steps", None) or []
+    # For dynamic workflows, parameters are in the definition JSON
+    # We return a minimal schema; the frontend provides the real schema
+    return {
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "Input message for the workflow.",
+            }
+        },
+        "additionalProperties": False,
+    }
+
+
+def _make_route_params(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Copy parameters schema, making all properties required for routing."""
+    params = dict(parameters)
+    props = params.get("properties", {})
+    if props:
+        params["required"] = list(props.keys())
+    return params
+
+
+# ── singleton ──
+
+
+_registry: WorkflowRegistry | None = None
 
 
 def get_workflow_registry() -> WorkflowRegistry:
-    return WorkflowRegistry()
+    global _registry
+    if _registry is not None:
+        return _registry
+    _registry = WorkflowRegistry()
+    return _registry
+
+
+async def refresh_dynamic_registry() -> None:
+    """Re-load DB workflows and rebuild the global registry.
+    
+    Call this after creating, updating, or deleting a workflow definition
+    so the chat router picks up the changes immediately.
+    """
+    global _registry
+    from app.services.dynamic_workflow_registry import load_dynamic_registrations
+
+    adapters = await load_dynamic_registrations()
+    _registry = WorkflowRegistry(dynamic_adapters=adapters)

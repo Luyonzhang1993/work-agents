@@ -5,6 +5,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from app.schemas.chat import ChatMessage
+from app.services.observability import get_observability_client
 from app.services.workflow_registry import WorkflowRegistry, get_workflow_registry
 
 
@@ -17,6 +18,7 @@ class WorkflowRoute:
 class WorkflowRouter:
     def __init__(self, workflow_registry: WorkflowRegistry | None = None) -> None:
         self.workflow_registry = workflow_registry or get_workflow_registry()
+        self.observability = get_observability_client()
 
     async def route(
         self,
@@ -25,24 +27,33 @@ class WorkflowRouter:
         message: str,
         history: list[ChatMessage],
     ) -> WorkflowRoute:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": self._system_prompt(),
-                },
-                *[
-                    {"role": history_message.role, "content": history_message.content}
-                    for history_message in history
-                ],
-                {"role": "user", "content": message},
+        messages = [
+            {
+                "role": "system",
+                "content": self._system_prompt(),
+            },
+            *[
+                {"role": history_message.role, "content": history_message.content}
+                for history_message in history
             ],
-            tools=self.workflow_registry.route_tools(),
-            tool_choice="auto",
-            temperature=0,
-            timeout=30,
-        )
+            {"role": "user", "content": message},
+        ]
+        tools = self.workflow_registry.route_tools()
+        with self.observability.start_generation(
+            "llm.workflow_router",
+            model=model,
+            input={"messages": messages, "tools": tools},
+            metadata={"temperature": 0, "tool_choice": "auto"},
+        ) as generation:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0,
+                timeout=30,
+            )
+            generation.update(output=response.model_dump())
         message = response.choices[0].message
         tool_calls = message.tool_calls or []
         for tool_call in tool_calls:

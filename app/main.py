@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 
-from app.api.routes import chat, health, mcp, workflows, ws_chat
+from app.api.routes import chat, health, manage_workflows, mcp, runs, workflows, ws_chat
 from app.core.config import get_settings
+from app.services.observability import get_observability_client
 
 
 def create_app() -> FastAPI:
@@ -16,6 +17,13 @@ def create_app() -> FastAPI:
     application.include_router(mcp.router, prefix="/api")
     application.include_router(workflows.router, prefix="/api")
     application.include_router(ws_chat.router, prefix="/api")
+    application.include_router(runs.router, prefix="/api")
+    application.include_router(manage_workflows.router, prefix="/api")
+
+    @application.on_event("shutdown")
+    def flush_observability() -> None:
+        get_observability_client().flush()
+
     return application
 
 

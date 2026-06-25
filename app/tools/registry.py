@@ -2,11 +2,10 @@ import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Union
+from typing import Any
 from zoneinfo import ZoneInfo
 
-
-ToolHandler = Callable[..., Union[dict[str, Any], Awaitable[dict[str, Any]]]]
+ToolHandler = Callable[..., dict[str, Any] | Awaitable[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
