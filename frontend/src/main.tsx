@@ -1,10 +1,32 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
+import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
+import AppLayout from "./App";
+import ChatPanel from "./components/ChatPanel";
+import WorkflowPanel from "./components/WorkflowPanel";
+import MCPPanel from "./components/MCPPanel";
+import RunPanel from "./components/RunPanel";
+import WorkflowManager from "./components/WorkflowManager";
 import "./index.css";
+
+const router = createBrowserRouter([
+  {
+    path: "/",
+    element: <AppLayout />,
+    children: [
+      { index: true, element: <Navigate to="/chat" replace /> },
+      { path: "chat", element: <ChatPanel /> },
+      { path: "workflows", element: <WorkflowPanel /> },
+      { path: "mcp", element: <MCPPanel /> },
+      { path: "runs", element: <RunPanel /> },
+      { path: "manage", element: <WorkflowManager /> },
+      { path: "manage/:id", element: <WorkflowManager /> },
+    ],
+  },
+]);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <RouterProvider router={router} />
   </StrictMode>,
 );

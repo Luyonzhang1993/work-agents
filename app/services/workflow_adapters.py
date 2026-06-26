@@ -31,6 +31,10 @@ class FinanceReportWorkflowAdapter(WorkflowRuntime):
     def definition(self) -> WorkflowDefinitionResponse:
         return self._service.finance_report_definition()
 
+    @property
+    def workflow_id(self) -> str:
+        return "workflow:finance_company_report"
+
     async def run(self, arguments: dict[str, Any]) -> WorkflowRunResponse:
         symbol = str(arguments.get("symbol") or "AMD")
         return await self._service.run_finance_report(
@@ -57,6 +61,10 @@ class TravelPlannerWorkflowAdapter(WorkflowRuntime):
 
     def definition(self) -> WorkflowDefinitionResponse:
         return self._service.definition()
+
+    @property
+    def workflow_id(self) -> str:
+        return "workflow:langgraph_travel_planner"
 
     async def run(self, arguments: dict[str, Any]) -> WorkflowRunResponse:
         request = TravelWorkflowRunRequest(

@@ -112,10 +112,104 @@ pre {
 .chat-panel {
   flex: 1;
   display: flex;
-  flex-direction: column;
-  max-width: 960px;
-  margin: 0 auto;
+  max-width: 100%;
   width: 100%;
+}
+
+/* Sidebar */
+.chat-sidebar {
+  width: 240px;
+  min-width: 240px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-sidebar-hidden {
+  display: none;
+}
+
+.chat-sidebar-toggle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 10;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.chat-sidebar-header {
+  display: flex;
+  gap: 6px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-sidebar-header .btn-primary {
+  padding: 4px 10px;
+  font-size: 12px;
+  flex: 1;
+}
+
+.chat-sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.chat-conv-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-bottom: 2px;
+  transition: background 0.15s;
+}
+
+.chat-conv-item:hover {
+  background: var(--bg-input);
+}
+
+.chat-conv-active {
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid var(--primary);
+}
+
+.chat-conv-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-conv-del {
+  opacity: 0;
+  transition: opacity 0.15s;
+  font-size: 10px;
+  padding: 2px 4px;
+}
+
+.chat-conv-item:hover .chat-conv-del {
+  opacity: 1;
+}
+
+/* Main chat area */
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .chat-toolbar {
@@ -998,6 +1092,135 @@ details summary {
   font-size: 12px;
   overflow-x: auto;
   color: var(--text);
+}
+
+/* ── Visual Editor ── */
+.visual-editor {
+  margin-top: 16px;
+}
+
+.ve-section {
+  margin-bottom: 24px;
+  padding: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.ve-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.ve-section-header h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.ve-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.ve-input, .ve-input-sm, .ve-input-xs {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 13px;
+  outline: none;
+}
+
+.ve-input:focus, .ve-input-sm:focus, .ve-input-xs:focus {
+  border-color: var(--primary);
+}
+
+.ve-input { flex: 1; min-width: 120px; }
+.ve-input-sm { width: 110px; }
+.ve-input-xs { width: 80px; }
+
+.ve-select, .ve-select-sm {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 13px;
+  outline: none;
+}
+
+.ve-select { min-width: 110px; }
+.ve-select-sm { width: 120px; }
+
+.ve-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ve-card {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.ve-card-header {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  flex-wrap: wrap;
+}
+
+.ve-card-body {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ve-card-body label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ve-textarea {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 8px;
+  resize: vertical;
+  outline: none;
+}
+
+.ve-textarea:focus {
+  border-color: var(--primary);
+}
+
+.ve-preview {
+  margin-top: 10px;
+  background: var(--bg-input);
+  padding: 14px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
 }
 
 /* ── Scrollbar ── */

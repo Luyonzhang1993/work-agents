@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import type { WorkflowDef } from "../api/client";
 import {
   listManagedWorkflows,
@@ -6,16 +7,7 @@ import {
   updateManagedWorkflow,
   deleteManagedWorkflow,
 } from "../api/client";
-
-const EMPTY_DEF: WorkflowDef = {
-  id: "",
-  name: "",
-  description: "",
-  definition: {},
-  enabled: true,
-  created_at: "",
-  updated_at: "",
-};
+import WorkflowVisualEditor from "./WorkflowVisualEditor";
 
 const EXAMPLE_DEFINITION = {
   parameters: {
@@ -51,16 +43,17 @@ const EXAMPLE_DEFINITION = {
 };
 
 export default function WorkflowManager() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const isNew = id === "new";
+  const isEditing = !!id && !isNew;
+
   const [workflows, setWorkflows] = useState<WorkflowDef[]>([]);
-  const [editing, setEditing] = useState<WorkflowDef | null>(null);
-  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [jsonError, setJsonError] = useState<string | null>(null);
-  const [defText, setDefText] = useState("");
+  const [visualDef, setVisualDef] = useState<Record<string, unknown>>({ ...EXAMPLE_DEFINITION });
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [wfId, setWfId] = useState("");
-  const [enabled, setEnabled] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -75,73 +68,60 @@ export default function WorkflowManager() {
     load();
   }, [load]);
 
-  const startCreate = () => {
-    setCreating(true);
-    setEditing(null);
-    setWfId("");
-    setName("");
-    setDesc("");
-    setDefText(JSON.stringify(EXAMPLE_DEFINITION, null, 2));
-    setEnabled(true);
-    setJsonError(null);
-  };
+  // When entering edit mode via URL, fetch + populate
+  useEffect(() => {
+    if (isNew) {
+      setWfId("");
+      setName("");
+      setDesc("");
+      setVisualDef({ ...EXAMPLE_DEFINITION });
+    } else if (isEditing && id) {
+      const wf = workflows.find((w) => w.id === id);
+      if (wf) {
+        setWfId(wf.id);
+        setName(wf.name);
+        setDesc(wf.description);
+        const def = typeof wf.definition === "string"
+          ? JSON.parse(wf.definition)
+          : wf.definition;
+        setVisualDef(def && typeof def === "object" ? { ...def } as Record<string, unknown> : { ...EXAMPLE_DEFINITION });
+      }
+    }
+  }, [id, isNew, isEditing, workflows]);
 
-  const startEdit = (wf: WorkflowDef) => {
-    setCreating(false);
-    setEditing(wf);
-    setWfId(wf.id);
-    setName(wf.name);
-    setDesc(wf.description);
-    setDefText(JSON.stringify(wf.definition, null, 2));
-    setEnabled(wf.enabled);
-    setJsonError(null);
-  };
-
-  const cancelEdit = () => {
-    setCreating(false);
-    setEditing(null);
-  };
+  const goList = () => navigate("/manage");
 
   const handleSave = async () => {
-    let definition: Record<string, unknown>;
-    try {
-      definition = JSON.parse(defText);
-    } catch {
-      setJsonError("JSON 格式错误");
-      return;
-    }
-    setJsonError(null);
+    const definition = visualDef;
 
     try {
-      if (creating) {
+      if (isNew) {
         await createManagedWorkflow({
           id: wfId,
           name,
           description: desc,
           definition,
-          enabled,
+          enabled: true,
           created_at: "",
           updated_at: "",
         });
-      } else if (editing) {
-        await updateManagedWorkflow(editing.id, {
+      } else if (isEditing && id) {
+        await updateManagedWorkflow(id, {
           name,
           description: desc,
           definition,
-          enabled,
         });
       }
-      cancelEdit();
-      await load();
+      goList();
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm(`确定删除 workflow "${id}"？`)) return;
+  const handleDelete = async (wfId: string) => {
+    if (!confirm(`确定删除 workflow "${wfId}"？`)) return;
     try {
-      await deleteManagedWorkflow(id);
+      await deleteManagedWorkflow(wfId);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除失败");
@@ -157,71 +137,35 @@ export default function WorkflowManager() {
     }
   };
 
-  return (
-    <div className="workflow-manager">
-      <div className="wm-header">
-        <h3>Workflow 管理</h3>
-        <button className="btn-primary" onClick={startCreate}>
-          + 新建
-        </button>
-      </div>
-
-      {error && (
-        <div className="error-box">
-          {error}
-          <button onClick={() => setError(null)}>✕</button>
+  // ── Editor view ──
+  if (isNew || isEditing) {
+    return (
+      <div className="workflow-manager">
+        <div className="wm-header">
+          <h3>
+            <button className="btn-sm" onClick={goList} title="返回列表">
+              ← 返回
+            </button>
+            {" "}
+            {isNew ? "新建 Workflow" : `编辑: ${wfId}`}
+          </h3>
         </div>
-      )}
 
-      {/* List */}
-      {!editing && !creating && (
-        <div className="wm-list">
-          {workflows.length === 0 && (
-            <p className="hint">暂无自定义 workflow，点击"新建"创建</p>
-          )}
-          {workflows.map((wf) => (
-            <div key={wf.id} className="wm-item">
-              <div className="wm-item-info">
-                <div className="wm-item-name">
-                  <code>{wf.id}</code>
-                  <span className={`badge ${wf.enabled ? "badge-completed" : "badge-failed"}`}>
-                    {wf.enabled ? "启用" : "禁用"}
-                  </span>
-                </div>
-                <div className="wm-item-title">{wf.name}</div>
-                <div className="wm-item-desc">{wf.description}</div>
-                <div className="wm-item-meta">
-                  更新于 {new Date(wf.updated_at).toLocaleString()}
-                </div>
-              </div>
-              <div className="wm-item-actions">
-                <button className="btn-sm" onClick={() => handleToggle(wf)}>
-                  {wf.enabled ? "禁用" : "启用"}
-                </button>
-                <button className="btn-sm" onClick={() => startEdit(wf)}>
-                  编辑
-                </button>
-                <button className="btn-sm btn-danger" onClick={() => handleDelete(wf.id)}>
-                  删除
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+        {error && (
+          <div className="error-box">
+            {error}
+            <button onClick={() => setError(null)}>✕</button>
+          </div>
+        )}
 
-      {/* Editor */}
-      {(editing || creating) && (
         <div className="wm-editor">
-          <h4>{creating ? "新建 Workflow" : `编辑: ${wfId}`}</h4>
-
           <div className="form-field">
             <label>ID (英文小写+数字+下划线)</label>
             <input
               type="text"
               value={wfId}
               onChange={(e) => setWfId(e.target.value)}
-              disabled={!creating}
+              disabled={!isNew}
               placeholder="e.g. my_custom_workflow"
             />
           </div>
@@ -246,68 +190,74 @@ export default function WorkflowManager() {
             />
           </div>
 
-          <div className="form-field">
-            <label>
-              <input
-                type="checkbox"
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-              />
-              {" "}启用
-            </label>
-          </div>
-
-          <div className="form-field">
-            <label>Definition (JSON)</label>
-            <textarea
-              className="wm-def-editor"
-              value={defText}
-              onChange={(e) => {
-                setDefText(e.target.value);
-                setJsonError(null);
-              }}
-              rows={25}
-              spellCheck={false}
-            />
-            {jsonError && <div className="error-box">{jsonError}</div>}
-          </div>
+          <WorkflowVisualEditor
+            value={visualDef as never}
+            onChange={(d) => setVisualDef(d as never)}
+          />
 
           <div className="wm-editor-actions">
             <button className="btn-primary" onClick={handleSave}>
               保存
             </button>
-            <button className="btn-sm" onClick={cancelEdit}>
+            <button className="btn-sm" onClick={goList}>
               取消
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
 
-          <details className="wm-help">
-            <summary>Definition 格式说明</summary>
-            <pre>{`{
-  "parameters": {           // 输入参数 schema
-    "type": "object",
-    "properties": {
-      "message": {"type": "string"}
-    }
-  },
-  "steps": [                 // 步骤列表
-    {
-      "id": "step1",         // 唯一 ID
-      "name": "分析",        // 步骤名
-      "type": "llm_call",    // llm_call | mcp_tool
-      "system_prompt": "...",
-      "user_prompt": "处理: {message}",
-      "temperature": 0.7
-    }
-  ],
-  "edges": [                 // 执行顺序
-    {"from": "start", "to": "step1"},
-    {"from": "step1", "to": "end"}
-  ]
-}`}</pre>
-          </details>
+  // ── List view ──
+  return (
+    <div className="workflow-manager">
+      <div className="wm-header">
+        <h3>Workflow 管理</h3>
+        <button className="btn-primary" onClick={() => navigate("/manage/new")}>
+          + 新建
+        </button>
+      </div>
+
+      {error && (
+        <div className="error-box">
+          {error}
+          <button onClick={() => setError(null)}>✕</button>
         </div>
       )}
+
+      <div className="wm-list">
+        {workflows.length === 0 && (
+          <p className="hint">暂无 workflow，点击"新建"创建</p>
+        )}
+        {workflows.map((wf) => (
+          <div key={wf.id} className="wm-item">
+            <div className="wm-item-info">
+              <div className="wm-item-name">
+                <code>{wf.id}</code>
+                <span className={`badge ${wf.enabled ? "badge-completed" : "badge-failed"}`}>
+                  {wf.enabled ? "启用" : "禁用"}
+                </span>
+              </div>
+              <div className="wm-item-title">{wf.name}</div>
+              <div className="wm-item-desc">{wf.description}</div>
+              <div className="wm-item-meta">
+                更新于 {new Date(wf.updated_at).toLocaleString()}
+              </div>
+            </div>
+            <div className="wm-item-actions">
+              <button className="btn-sm" onClick={() => handleToggle(wf)}>
+                {wf.enabled ? "禁用" : "启用"}
+              </button>
+              <button className="btn-sm" onClick={() => navigate(`/manage/${wf.id}`)}>
+                编辑
+              </button>
+              <button className="btn-sm btn-danger" onClick={() => handleDelete(wf.id)}>
+                删除
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

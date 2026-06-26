@@ -9,6 +9,8 @@ import type {
   WorkflowRunResponse,
 } from "../types";
 
+export type { MCPTool };
+
 const BASE = "/api";
 
 // ── Chat ──
@@ -154,4 +156,60 @@ export async function deleteManagedWorkflow(
     throw new Error(err.detail || "Delete failed");
   }
   return res.json();
+}
+
+// ── Conversations ──
+
+export interface Conversation {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages?: ConvMessage[];
+}
+
+export interface ConvMessage {
+  role: string;
+  content: string;
+  created_at: string;
+}
+
+export async function listConversations(): Promise<Conversation[]> {
+  const res = await fetch(`${BASE}/conversations`);
+  if (!res.ok) throw new Error("Failed to list conversations");
+  return res.json();
+}
+
+export async function createConversation(title?: string): Promise<Conversation> {
+  const res = await fetch(`${BASE}/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: title || "New Chat" }),
+  });
+  if (!res.ok) throw new Error("Failed to create conversation");
+  return res.json();
+}
+
+export async function getConversation(id: string): Promise<Conversation> {
+  const res = await fetch(`${BASE}/conversations/${id}`);
+  if (!res.ok) throw new Error("Conversation not found");
+  return res.json();
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/conversations/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete conversation");
+}
+
+export async function addMessage(
+  convId: string,
+  role: string,
+  content: string,
+): Promise<void> {
+  const res = await fetch(`${BASE}/conversations/${convId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role, content }),
+  });
+  if (!res.ok) throw new Error("Failed to save message");
 }

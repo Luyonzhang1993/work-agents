@@ -32,21 +32,101 @@ async def create(
     description: str = "",
     definition: dict[str, Any] | None = None,
     enabled: bool = True,
+    engine: str = "dynamic",
 ) -> None:
     await db.execute(
         """
-        INSERT INTO workflow_definitions (id, name, description, definition, enabled)
-        VALUES (:id, :name, :description, :definition, :enabled)
+        INSERT INTO workflow_definitions (id, name, description, engine, definition, enabled)
+        VALUES (:id, :name, :description, :engine, :definition, :enabled)
         """,
         {
             "id": workflow_id,
             "name": name,
             "description": description,
+            "engine": engine,
             "definition": json.dumps(definition or {}, ensure_ascii=False),
             "enabled": 1 if enabled else 0,
         },
     )
     await db.commit()
+
+
+async def seed_builtins(db: aiosqlite.Connection) -> None:
+    """Ensure built-in workflows exist in the DB (idempotent)."""
+    builtins = [
+        {
+            "id": "finance_company_report",
+            "name": "金融公司报告",
+            "description": "LangGraph 金融报告工作流：并行获取公司信息、新闻、财务数据，由 LLM 生成中文分析报告。",
+            "engine": "finance_report",
+            "definition": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "股票代码，如 AMD",
+                            "default": "AMD",
+                        }
+                    },
+                    "additionalProperties": False,
+                }
+            },
+        },
+        {
+            "id": "langgraph_travel_planner",
+            "name": "旅行规划助手",
+            "description": "LangGraph 旅行规划工作流：根据目的地、天数、预算、兴趣生成日���行程、风险检查和最终方案。",
+            "engine": "travel_planner",
+            "definition": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "destination": {
+                            "type": "string",
+                            "description": "旅行目的地",
+                            "default": "杭州",
+                        },
+                        "duration_days": {
+                            "type": "integer",
+                            "description": "旅行天数 (1-14)",
+                            "default": 3,
+                        },
+                        "budget_level": {
+                            "type": "string",
+                            "enum": ["budget", "comfort", "premium"],
+                            "description": "预算等级",
+                            "default": "comfort",
+                        },
+                        "traveler_type": {
+                            "type": "string",
+                            "description": "旅行者类型: solo, couple, family, friends, business",
+                            "default": "couple",
+                        },
+                        "interests": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "兴趣标签: local_food, culture, nature, city_walk 等",
+                        },
+                    },
+                    "additionalProperties": False,
+                }
+            },
+        },
+    ]
+
+    for wf in builtins:
+        existing = await get_by_id(db, wf["id"])
+        if existing is None:
+            await create(
+                db,
+                workflow_id=wf["id"],
+                name=wf["name"],
+                description=wf["description"],
+                definition=wf["definition"],
+                engine=wf["engine"],
+                enabled=True,
+            )
 
 
 async def update(

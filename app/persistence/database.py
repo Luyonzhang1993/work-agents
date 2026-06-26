@@ -61,14 +61,42 @@ async def _migrate(db: aiosqlite.Connection) -> None:
             id            TEXT PRIMARY KEY,
             name          TEXT NOT NULL DEFAULT '',
             description   TEXT NOT NULL DEFAULT '',
+            engine        TEXT NOT NULL DEFAULT 'dynamic',
             definition    TEXT NOT NULL DEFAULT '{}',
             enabled       INTEGER NOT NULL DEFAULT 1,
             created_at    TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS conversations (
+            id            TEXT PRIMARY KEY,
+            title         TEXT NOT NULL DEFAULT 'New Chat',
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS messages (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id),
+            role            TEXT NOT NULL,
+            content         TEXT NOT NULL DEFAULT '',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_messages_conv
+            ON messages(conversation_id);
         """
     )
     await db.commit()
+    # Migrate: add engine column if missing (added in v0.2)
+    try:
+        await db.execute(
+            "ALTER TABLE workflow_definitions ADD COLUMN "
+            "engine TEXT NOT NULL DEFAULT 'dynamic'"
+        )
+        await db.commit()
+    except Exception:
+        pass  # column already exists
 
 
 async def close_db(db: aiosqlite.Connection) -> None:

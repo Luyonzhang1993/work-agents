@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 
-from app.api.routes import chat, health, manage_workflows, mcp, runs, workflows, ws_chat
+from app.api.routes import chat, conversations, health, manage_workflows, mcp, runs, workflows, ws_chat
 from app.core.config import get_settings
 from app.services.observability import get_observability_client
+from app.services.workflow_registry import refresh_dynamic_registry
 
 
 def create_app() -> FastAPI:
@@ -19,6 +20,11 @@ def create_app() -> FastAPI:
     application.include_router(ws_chat.router, prefix="/api")
     application.include_router(runs.router, prefix="/api")
     application.include_router(manage_workflows.router, prefix="/api")
+    application.include_router(conversations.router, prefix="/api")
+
+    @application.on_event("startup")
+    async def load_workflows() -> None:
+        await refresh_dynamic_registry()
 
     @application.on_event("shutdown")
     def flush_observability() -> None:
