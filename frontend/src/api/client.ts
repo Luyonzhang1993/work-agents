@@ -205,11 +205,12 @@ export async function addMessage(
   convId: string,
   role: string,
   content: string,
+  metadata?: Record<string, unknown>,
 ): Promise<void> {
   const res = await fetch(`${BASE}/conversations/${convId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role, content }),
+    body: JSON.stringify({ role, content, metadata }),
   });
   if (!res.ok) throw new Error("Failed to save message");
 }

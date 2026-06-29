@@ -18,6 +18,7 @@ class NewConversation(BaseModel):
 class AddMessageRequest(BaseModel):
     role: str = Field(pattern="^(user|assistant|system)$")
     content: str
+    metadata: dict | None = None
 
 
 class UpdateTitleRequest(BaseModel):
@@ -77,7 +78,7 @@ async def add_message(conv_id: str, body: AddMessageRequest) -> dict:
         conv = await conv_repo.get_conversation(db, conv_id)
         if conv is None:
             raise HTTPException(status_code=404, detail="Not found")
-        await conv_repo.add_message(db, conv_id, body.role, body.content)
+        await conv_repo.add_message(db, conv_id, body.role, body.content, body.metadata)
         # Auto-title: use first user message
         if conv.get("title") == "New Chat" and body.role == "user":
             title = body.content[:60]

@@ -125,9 +125,8 @@ export default function WorkflowVisualEditor({ value, onChange }: Props) {
     updateSteps(steps.filter((_, i) => i !== idx));
   };
 
-  const changeStep = (idx: number, field: keyof StepDef, val: unknown) => {
-    const copy = steps.map((s) => ({ ...s }));
-    (copy[idx] as Record<string, unknown>)[field] = val;
+  const changeStep = (idx: number, fields: Partial<StepDef>) => {
+    const copy = steps.map((s, i) => (i === idx ? { ...s, ...fields } : { ...s }));
     updateSteps(copy);
   };
 
@@ -219,18 +218,18 @@ export default function WorkflowVisualEditor({ value, onChange }: Props) {
                 className="ve-input"
                 placeholder="步骤ID (英文)"
                 value={s.id}
-                onChange={(e) => changeStep(i, "id", e.target.value)}
+                onChange={(e) => changeStep(i, { id: e.target.value })}
               />
               <input
                 className="ve-input"
                 placeholder="步骤名称"
                 value={s.name}
-                onChange={(e) => changeStep(i, "name", e.target.value)}
+                onChange={(e) => changeStep(i, { name: e.target.value })}
               />
               <select
                 className="ve-select"
                 value={s.type}
-                onChange={(e) => changeStep(i, "type", e.target.value)}
+                onChange={(e) => changeStep(i, { type: e.target.value as StepDef["type"] })}
               >
                 {STEP_TYPES.map((t) => (
                   <option key={t.value} value={t.value}>{t.label}</option>
@@ -246,7 +245,7 @@ export default function WorkflowVisualEditor({ value, onChange }: Props) {
                   className="ve-textarea"
                   rows={3}
                   value={s.system_prompt}
-                  onChange={(e) => changeStep(i, "system_prompt", e.target.value)}
+                  onChange={(e) => changeStep(i, { system_prompt: e.target.value })}
                   placeholder="You are a helpful assistant."
                 />
                 <label>User Prompt <span className="hint">（可用 {"{变量名}"} 引用前序步骤输出）</span></label>
@@ -254,7 +253,7 @@ export default function WorkflowVisualEditor({ value, onChange }: Props) {
                   className="ve-textarea"
                   rows={4}
                   value={s.user_prompt}
-                  onChange={(e) => changeStep(i, "user_prompt", e.target.value)}
+                  onChange={(e) => changeStep(i, { user_prompt: e.target.value })}
                   placeholder="请处理: {message}"
                 />
                 <label>Temperature</label>
@@ -265,7 +264,7 @@ export default function WorkflowVisualEditor({ value, onChange }: Props) {
                   max={2}
                   step={0.1}
                   value={s.temperature}
-                  onChange={(e) => changeStep(i, "temperature", parseFloat(e.target.value) || 0.7)}
+                  onChange={(e) => changeStep(i, { temperature: parseFloat(e.target.value) || 0.7 })}
                 />
               </div>
             )}
@@ -279,8 +278,10 @@ export default function WorkflowVisualEditor({ value, onChange }: Props) {
                   onChange={(e) => {
                     const toolId = e.target.value;
                     const tool = mcpTools.find((t) => t.id === toolId);
-                    changeStep(i, "tool_id", toolId);
-                    changeStep(i, "tool_name", tool ? `${tool.service}.${tool.name}` : "");
+                    changeStep(i, {
+                      tool_id: toolId,
+                      tool_name: tool ? `${tool.service}.${tool.name}` : "",
+                    });
                   }}
                 >
                   <option value="">-- 选择工具 --</option>
@@ -299,7 +300,12 @@ export default function WorkflowVisualEditor({ value, onChange }: Props) {
                 <input
                   className="ve-input"
                   value={(s as unknown as Record<string,string>).source || ""}
-                  onChange={(e) => changeStep(i, "source" as keyof StepDef, e.target.value)}
+                  onChange={(e) => {
+                    const copy = steps.map((s2, i2) =>
+                      i2 === i ? { ...s2, source: e.target.value } : { ...s2 }
+                    );
+                    updateSteps(copy as StepDef[]);
+                  }}
                   placeholder="步骤ID"
                 />
               </div>

@@ -80,11 +80,24 @@ async def _migrate(db: aiosqlite.Connection) -> None:
             conversation_id TEXT NOT NULL REFERENCES conversations(id),
             role            TEXT NOT NULL,
             content         TEXT NOT NULL DEFAULT '',
+            metadata        TEXT NOT NULL DEFAULT '{}',
             created_at      TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
         CREATE INDEX IF NOT EXISTS idx_messages_conv
             ON messages(conversation_id);
+
+        CREATE TABLE IF NOT EXISTS mcp_services (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            module      TEXT NOT NULL DEFAULT '',
+            command     TEXT,
+            timeout     REAL NOT NULL DEFAULT 10,
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         """
     )
     await db.commit()

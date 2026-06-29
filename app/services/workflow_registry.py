@@ -1,10 +1,16 @@
 from dataclasses import dataclass
 from typing import Any
 
-from app.services.dynamic_workflow_registry import RegistrationBundle
 from app.services.workflow_runtime import WorkflowRuntime
 
 WORKFLOW_ID_PREFIX = "workflow:"
+
+
+@dataclass
+class RegistrationBundle:
+    """An adapter paired with its parameters schema from the DB."""
+    runtime: WorkflowRuntime
+    parameters: dict[str, Any]
 
 
 @dataclass(frozen=True)

@@ -4,7 +4,7 @@ import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom"
 import AppLayout from "./App";
 import ChatPanel from "./components/ChatPanel";
 import WorkflowPanel from "./components/WorkflowPanel";
-import MCPPanel from "./components/MCPPanel";
+import MCPPage from "./components/MCPPage";
 import RunPanel from "./components/RunPanel";
 import WorkflowManager from "./components/WorkflowManager";
 import "./index.css";
@@ -17,7 +17,7 @@ const router = createBrowserRouter([
       { index: true, element: <Navigate to="/chat" replace /> },
       { path: "chat", element: <ChatPanel /> },
       { path: "workflows", element: <WorkflowPanel /> },
-      { path: "mcp", element: <MCPPanel /> },
+      { path: "mcp", element: <MCPPage /> },
       { path: "runs", element: <RunPanel /> },
       { path: "manage", element: <WorkflowManager /> },
       { path: "manage/:id", element: <WorkflowManager /> },

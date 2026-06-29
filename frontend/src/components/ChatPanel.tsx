@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import type { ChatMessage, WSEvent } from "../types";
 import { createChatSocket, sendChat } from "../api/client";
 import {
@@ -35,6 +36,7 @@ export default function ChatPanel() {
   const [wsStatus, setWsStatus] = useState<string>("disconnected");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [showSidebar, setShowSidebar] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -51,10 +53,16 @@ export default function ChatPanel() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Load conversations on mount
+  // Load conversations on mount, auto-select from URL param
   useEffect(() => {
     listConversations()
-      .then(setConversations)
+      .then((convs) => {
+        setConversations(convs);
+        const convParam = searchParams.get("conv");
+        if (convParam && convs.some((c) => c.id === convParam)) {
+          selectConversation(convParam);
+        }
+      })
       .catch(() => {});
   }, []);
 
@@ -92,12 +100,14 @@ export default function ChatPanel() {
           ...prev,
           { role: "system", content: String(evt.data.message || "正在处理...") },
         ]);
+        if (cid) addMessage(cid, "system", String(evt.data.message || ""), { type: "responding" }).catch(() => {});
         break;
       case "workflow.routed":
         setMessages((prev) => [
           ...prev,
           { role: "system", content: `📌 ${String(evt.data.workflow_name || evt.data.workflow_id || "")}` },
         ]);
+        if (cid) addMessage(cid, "system", `📌 ${String(evt.data.workflow_name || evt.data.workflow_id || "")}`, { type: "workflow.routed", workflow_id: evt.data.workflow_id }).catch(() => {});
         break;
       case "workflow.started":
         setMessages((prev) => {
@@ -143,8 +153,8 @@ export default function ChatPanel() {
             if (msg) copy[s.msgIndex] = { ...msg, content: fullText, streaming: false };
             return copy;
           });
-          // Persist assistant message
-          if (cid) addMessage(cid, "assistant", fullText).catch(() => {});
+          // Persist assistant message with steps metadata
+          if (cid) addMessage(cid, "assistant", fullText, { type: "workflow_result", steps: s.steps.filter((st) => st.status === "completed") }).catch(() => {});
         }
         break;
       }
@@ -183,27 +193,38 @@ export default function ChatPanel() {
   // ── Conversation management ──
 
   const startNewChat = useCallback(async () => {
-    try {
-      const conv = await createConversation();
-      setConversations((prev) => [conv, ...prev]);
-      selectConversation(conv.id);
-    } catch {}
-  }, []);
+    setSearchParams({});
+    setActiveConvId(null);
+    convIdRef.current = null;
+    setMessages([]);
+  }, [setSearchParams]);
 
   const selectConversation = useCallback(async (convId: string) => {
     setActiveConvId(convId);
     convIdRef.current = convId;
+    setSearchParams({ conv: convId });
     try {
       const conv = await getConversation(convId);
-      const msgs: DisplayMessage[] = (conv.messages || []).map((m) => ({
-        role: m.role as Role,
-        content: m.content,
-      }));
+      const msgs: DisplayMessage[] = (conv.messages || []).map((m) => {
+        const msg: DisplayMessage = { role: m.role as Role, content: m.content };
+        // Restore workflow steps from metadata
+        const meta = (m as unknown as Record<string, unknown>).metadata;
+        if (meta && typeof meta === "string") {
+          try {
+            const parsed = JSON.parse(meta);
+            if (parsed.steps) msg.steps = parsed.steps;
+          } catch {}
+        } else if (meta && typeof meta === "object") {
+          const obj = meta as Record<string, unknown>;
+          if (obj.steps) msg.steps = obj.steps as WorkflowStepItem[];
+        }
+        return msg;
+      });
       setMessages(msgs);
     } catch {
       setMessages([]);
     }
-  }, []);
+  }, [setSearchParams]);
 
   const handleDeleteConv = useCallback(async (convId: string) => {
     if (!confirm("删除此对话？")) return;

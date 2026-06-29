@@ -8,6 +8,7 @@ import {
   deleteManagedWorkflow,
 } from "../api/client";
 import WorkflowVisualEditor from "./WorkflowVisualEditor";
+import WorkflowFlowEditor from "./WorkflowFlowEditor";
 
 const EXAMPLE_DEFINITION = {
   parameters: {
@@ -54,6 +55,7 @@ export default function WorkflowManager() {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [wfId, setWfId] = useState("");
+  const [useFlowEditor, setUseFlowEditor] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -190,10 +192,25 @@ export default function WorkflowManager() {
             />
           </div>
 
-          <WorkflowVisualEditor
-            value={visualDef as never}
-            onChange={(d) => setVisualDef(d as never)}
-          />
+          <div style={{ marginBottom: 10 }}>
+            <label className="toggle-label" style={{ display: 'inline-flex', cursor: 'pointer' }}>
+              <input type="checkbox" checked={useFlowEditor}
+                onChange={(e) => setUseFlowEditor(e.target.checked)} />
+              {" "}画布拖拽编辑
+            </label>
+          </div>
+
+          {useFlowEditor ? (
+            <WorkflowFlowEditor
+              value={visualDef as never}
+              onChange={(d) => setVisualDef(d as never)}
+            />
+          ) : (
+            <WorkflowVisualEditor
+              value={visualDef as never}
+              onChange={(d) => setVisualDef(d as never)}
+            />
+          )}
 
           <div className="wm-editor-actions">
             <button className="btn-primary" onClick={handleSave}>

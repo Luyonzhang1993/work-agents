@@ -271,10 +271,25 @@ class DynamicWorkflowEngine:
             )
             sequence += 1
 
-            # Enqueue successors
-            for succ in successors.get(node_id, []):
-                if succ not in visited and succ not in queue:
-                    queue.append(succ)
+            # Enqueue successors with condition filtering
+            successors_for_node = successors.get(node_id, [])
+            if step_type == "condition":
+                cond_value = str(output)
+                for succ in successors_for_node:
+                    # Find the edge for this successor
+                    edge = next(
+                        (e for e in edges if e["from"] == node_id and e["to"] == succ),
+                        None,
+                    )
+                    edge_cond = (edge or {}).get("condition", "")
+                    # Follow: no condition (default) OR condition matches
+                    if not edge_cond or str(edge_cond) == cond_value:
+                        if succ not in visited and succ not in queue:
+                            queue.append(succ)
+            else:
+                for succ in successors_for_node:
+                    if succ not in visited and succ not in queue:
+                        queue.append(succ)
 
         # Gather final report from the last step or a designated _report key
         report_key = definition.get("report_from", "")
@@ -326,6 +341,8 @@ class DynamicWorkflowEngine:
             return await self._execute_mcp_tool(step, state)
         elif step_type == "pass_through":
             return self._execute_pass_through(step, state)
+        elif step_type == "condition":
+            return self._execute_condition(step, state)
         else:
             raise ValueError(f"Unknown step type: {step_type}")
 
@@ -387,6 +404,21 @@ class DynamicWorkflowEngine:
         if source and source in state:
             return state[source]
         return step.get("value", {})
+
+    def _execute_condition(
+        self,
+        step: dict[str, Any],
+        state: dict[str, Any],
+    ) -> Any:
+        """Evaluate a condition step. Returns the field value for routing.
+        
+        The step has a ``field`` that names a state key to check.
+        Edges from this node have an optional ``condition`` field.
+        Only edges matching the value (or edges with no condition) are followed.
+        """
+        field = step.get("field", "")
+        value = state.get(field, step.get("default", ""))
+        return value  # Used by the enqueue logic below via edge conditions
 
     def _client(self) -> AsyncOpenAI:
         if self.llm_client is None:

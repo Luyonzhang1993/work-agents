@@ -1,8 +1,11 @@
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from app.services.mcp_client import MCPFraming, MCPStdioClient
 from app.services.observability import get_observability_client
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -24,41 +27,37 @@ class MCPToolReference:
 
 
 class MCPRegistry:
-    def __init__(self, services: list[MCPServiceDefinition]) -> None:
-        self.services = {service.name: service for service in services}
+    def __init__(self, services: list[MCPServiceDefinition] | None = None) -> None:
+        self.services: dict[str, MCPServiceDefinition] = {}
+        if services:
+            for s in services:
+                self.services[s.name] = s
         self.observability = get_observability_client()
 
     async def list_tools(self) -> list[MCPToolReference]:
         tools: list[MCPToolReference] = []
         for service in self.services.values():
-            client = self._client(service.name)
-            for tool in await client.list_tools():
-                tools.append(
-                    MCPToolReference(
+            try:
+                client = self._client(service.name)
+                for tool in await client.list_tools():
+                    tools.append(MCPToolReference(
                         tool_id=self._tool_id(service.name, tool["name"]),
                         service_name=service.name,
                         name=tool["name"],
                         description=tool.get("description", ""),
                         parameters=tool.get("inputSchema", {}),
-                    )
-                )
+                    ))
+            except Exception:
+                logger.warning("Failed to list tools for MCP service '%s'", service.name, exc_info=True)
         return tools
 
-    async def call_tool(
-        self,
-        tool_id: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
+    async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         service_name, tool_name = self._parse_tool_id(tool_id)
         client = self._client(service_name)
         with self.observability.start_span(
             f"mcp.{service_name}.{tool_name}",
             input=arguments,
-            metadata={
-                "tool_id": tool_id,
-                "service": service_name,
-                "tool": tool_name,
-            },
+            metadata={"tool_id": tool_id, "service": service_name, "tool": tool_name},
         ) as observation:
             try:
                 result = await client.call_tool(tool_name, arguments)
@@ -79,7 +78,8 @@ class MCPRegistry:
             timeout=service.timeout,
         )
 
-    def _tool_id(self, service_name: str, tool_name: str) -> str:
+    @staticmethod
+    def _tool_id(service_name: str, tool_name: str) -> str:
         return f"mcp:{service_name}:{tool_name}"
 
     def _parse_tool_id(self, tool_id: str) -> tuple[str, str]:
@@ -89,18 +89,39 @@ class MCPRegistry:
         return service_name, tool_name
 
 
+# ── singleton ──
+
+_registry: MCPRegistry | None = None
+
+
 def get_mcp_registry() -> MCPRegistry:
+    global _registry
+    if _registry is not None:
+        return _registry
+    _registry = MCPRegistry()
+    return _registry
+
+
+async def refresh_mcp_registry() -> None:
+    """Re-load MCP services from DB and rebuild the global registry."""
+    global _registry
+    from app.persistence.database import get_db
+    from app.persistence import mcp_services as repo
+
+    db = await get_db()
+    try:
+        await repo.seed_builtins(db)
+        rows = await repo.list_all(db, enabled_only=True)
+    finally:
+        await db.close()
+
     services = [
         MCPServiceDefinition(
-            name="arithmetic",
-            module="app.mcp_server.arithmetic",
-        ),
-        MCPServiceDefinition(
-            name="marketdata",
-            module="app.mcp_server.marketdata",
-            timeout=30,
-        ),
+            name=row["id"],
+            module=row.get("module") or None,
+            command=row.get("command") or None,
+            timeout=float(row.get("timeout", 10)),
+        )
+        for row in rows
     ]
-    return MCPRegistry(
-        services=services,
-    )
+    _registry = MCPRegistry(services=services)

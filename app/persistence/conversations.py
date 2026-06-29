@@ -1,5 +1,6 @@
 """Conversation and message persistence."""
 
+import json
 from typing import Any
 
 import aiosqlite
@@ -58,10 +59,14 @@ async def add_message(
     conversation_id: str,
     role: str,
     content: str,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     await db.execute(
-        "INSERT INTO messages (conversation_id, role, content) VALUES (:cid, :role, :content)",
-        {"cid": conversation_id, "role": role, "content": content},
+        "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (:cid, :role, :content, :meta)",
+        {
+            "cid": conversation_id, "role": role, "content": content,
+            "meta": json.dumps(metadata or {}, ensure_ascii=False),
+        },
     )
     await db.execute(
         "UPDATE conversations SET updated_at = datetime('now') WHERE id = :cid",
@@ -75,7 +80,7 @@ async def get_messages(
     conversation_id: str,
 ) -> list[dict[str, Any]]:
     cursor = await db.execute(
-        "SELECT role, content, created_at FROM messages WHERE conversation_id = :cid ORDER BY id",
+        "SELECT role, content, metadata, created_at FROM messages WHERE conversation_id = :cid ORDER BY id",
         {"cid": conversation_id},
     )
     return [_row_to_dict(row) async for row in cursor]
