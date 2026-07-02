@@ -30,18 +30,20 @@ async def create(
     workflow_id: str,
     name: str,
     description: str = "",
+    engine: str = "skill",
     definition: dict[str, Any] | None = None,
     enabled: bool = True,
 ) -> None:
     await db.execute(
         """
         INSERT INTO workflow_definitions (id, name, description, engine, definition, enabled)
-        VALUES (:id, :name, :description, 'dynamic', :definition, :enabled)
+        VALUES (:id, :name, :description, :engine, :definition, :enabled)
         """,
         {
             "id": workflow_id,
             "name": name,
             "description": description,
+            "engine": engine,
             "definition": json.dumps(definition or {}, ensure_ascii=False),
             "enabled": 1 if enabled else 0,
         },
@@ -56,6 +58,7 @@ async def update(
     workflow_id: str,
     name: str | None = None,
     description: str | None = None,
+    engine: str | None = None,
     definition: dict[str, Any] | None = None,
     enabled: bool | None = None,
 ) -> None:
@@ -69,6 +72,9 @@ async def update(
     if description is not None:
         sets.append("description = :description")
         params["description"] = description
+    if engine is not None:
+        sets.append("engine = :engine")
+        params["engine"] = engine
     if definition is not None:
         sets.append("definition = :definition")
         params["definition"] = json.dumps(definition, ensure_ascii=False)

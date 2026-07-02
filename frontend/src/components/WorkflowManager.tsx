@@ -7,10 +7,35 @@ import {
   updateManagedWorkflow,
   deleteManagedWorkflow,
 } from "../api/client";
-import WorkflowVisualEditor from "./WorkflowVisualEditor";
-import WorkflowFlowEditor from "./WorkflowFlowEditor";
+import SkillEditor from "./SkillEditor";
+import WorkflowComposerEditor from "./WorkflowComposerEditor";
 
-const EXAMPLE_DEFINITION = {
+type WorkflowEngine = "skill" | "dynamic";
+
+const EXAMPLE_SKILL_DEFINITION = {
+  parameters: {
+    type: "object",
+    properties: {
+      message: { type: "string", description: "输入信息" },
+    },
+    required: ["message"],
+    additionalProperties: false,
+  },
+  skill:
+    "# Skill\n\n" +
+    "## When to use\n" +
+    "当用户请求适合这个能力处理时使用。\n\n" +
+    "## Process\n" +
+    "1. 理解用户目标和输入。\n" +
+    "2. 按需要拆解任务并给出可靠结果。\n" +
+    "3. 如果信息不足，明确说明缺口。\n\n" +
+    "## Output\n" +
+    "直接输出给用户的最终结果。",
+  input_template: "请处理：{message}",
+  temperature: 0.2,
+};
+
+const EXAMPLE_DYNAMIC_DEFINITION = {
   parameters: {
     type: "object",
     properties: {
@@ -51,11 +76,11 @@ export default function WorkflowManager() {
 
   const [workflows, setWorkflows] = useState<WorkflowDef[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [visualDef, setVisualDef] = useState<Record<string, unknown>>({ ...EXAMPLE_DEFINITION });
+  const [definition, setDefinition] = useState<Record<string, unknown>>({ ...EXAMPLE_SKILL_DEFINITION });
+  const [engine, setEngine] = useState<WorkflowEngine>("skill");
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [wfId, setWfId] = useState("");
-  const [useFlowEditor, setUseFlowEditor] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -76,17 +101,22 @@ export default function WorkflowManager() {
       setWfId("");
       setName("");
       setDesc("");
-      setVisualDef({ ...EXAMPLE_DEFINITION });
+      setEngine("skill");
+      setDefinition({ ...EXAMPLE_SKILL_DEFINITION });
     } else if (isEditing && id) {
       const wf = workflows.find((w) => w.id === id);
       if (wf) {
         setWfId(wf.id);
         setName(wf.name);
         setDesc(wf.description);
+        setEngine(wf.engine || "dynamic");
         const def = typeof wf.definition === "string"
           ? JSON.parse(wf.definition)
           : wf.definition;
-        setVisualDef(def && typeof def === "object" ? { ...def } as Record<string, unknown> : { ...EXAMPLE_DEFINITION });
+        const fallback = wf.engine === "skill"
+          ? EXAMPLE_SKILL_DEFINITION
+          : EXAMPLE_DYNAMIC_DEFINITION;
+        setDefinition(def && typeof def === "object" ? { ...def } as Record<string, unknown> : { ...fallback });
       }
     }
   }, [id, isNew, isEditing, workflows]);
@@ -94,14 +124,13 @@ export default function WorkflowManager() {
   const goList = () => navigate("/manage");
 
   const handleSave = async () => {
-    const definition = visualDef;
-
     try {
       if (isNew) {
         await createManagedWorkflow({
           id: wfId,
           name,
           description: desc,
+          engine,
           definition,
           enabled: true,
           created_at: "",
@@ -111,6 +140,7 @@ export default function WorkflowManager() {
         await updateManagedWorkflow(id, {
           name,
           description: desc,
+          engine,
           definition,
         });
       }
@@ -118,6 +148,15 @@ export default function WorkflowManager() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
     }
+  };
+
+  const handleEngineChange = (nextEngine: WorkflowEngine) => {
+    setEngine(nextEngine);
+    setDefinition(
+      nextEngine === "skill"
+        ? { ...EXAMPLE_SKILL_DEFINITION }
+        : { ...EXAMPLE_DYNAMIC_DEFINITION },
+    );
   };
 
   const handleDelete = async (wfId: string) => {
@@ -192,23 +231,32 @@ export default function WorkflowManager() {
             />
           </div>
 
-          <div style={{ marginBottom: 10 }}>
-            <label className="toggle-label" style={{ display: 'inline-flex', cursor: 'pointer' }}>
-              <input type="checkbox" checked={useFlowEditor}
-                onChange={(e) => setUseFlowEditor(e.target.checked)} />
-              {" "}画布拖拽编辑
-            </label>
+          <div className="engine-tabs" role="tablist" aria-label="Workflow engine">
+            <button
+              type="button"
+              className={engine === "skill" ? "engine-tab engine-tab-active" : "engine-tab"}
+              onClick={() => handleEngineChange("skill")}
+            >
+              Skill
+            </button>
+            <button
+              type="button"
+              className={engine === "dynamic" ? "engine-tab engine-tab-active" : "engine-tab"}
+              onClick={() => handleEngineChange("dynamic")}
+            >
+              Dynamic
+            </button>
           </div>
 
-          {useFlowEditor ? (
-            <WorkflowFlowEditor
-              value={visualDef as never}
-              onChange={(d) => setVisualDef(d as never)}
+          {engine === "skill" ? (
+            <SkillEditor
+              value={definition}
+              onChange={setDefinition}
             />
           ) : (
-            <WorkflowVisualEditor
-              value={visualDef as never}
-              onChange={(d) => setVisualDef(d as never)}
+            <WorkflowComposerEditor
+              value={definition}
+              onChange={setDefinition}
             />
           )}
 
@@ -253,6 +301,9 @@ export default function WorkflowManager() {
                 <code>{wf.id}</code>
                 <span className={`badge ${wf.enabled ? "badge-completed" : "badge-failed"}`}>
                   {wf.enabled ? "启用" : "禁用"}
+                </span>
+                <span className="badge badge-neutral">
+                  {wf.engine || "dynamic"}
                 </span>
               </div>
               <div className="wm-item-title">{wf.name}</div>

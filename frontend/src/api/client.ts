@@ -102,6 +102,7 @@ export interface WorkflowDef {
   id: string;
   name: string;
   description: string;
+  engine: "skill" | "dynamic";
   definition: Record<string, unknown>;
   enabled: boolean;
   created_at: string;

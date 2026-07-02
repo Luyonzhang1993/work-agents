@@ -13,6 +13,11 @@ from app.persistence.database import get_db
 from app.persistence import workflows as wf_repo
 from app.schemas.workflow import WorkflowDefinitionResponse, WorkflowEvent, WorkflowRunResponse
 from app.services.dynamic_workflow_engine import DynamicWorkflowEngine, get_dynamic_engine
+from app.services.skill_workflow_engine import (
+    SkillWorkflowAdapter,
+    extract_skill_parameters,
+    get_skill_engine,
+)
 from app.services.workflow_runtime import WorkflowRuntime
 
 logger = logging.getLogger(__name__)
@@ -103,19 +108,35 @@ async def load_dynamic_registrations() -> list["RegistrationBundle"]:
     finally:
         await db.close()
 
-    engine = get_dynamic_engine()
+    dynamic_engine = get_dynamic_engine()
+    skill_engine = get_skill_engine()
     # Use local import to avoid circular dependency at module level
     from app.services.workflow_registry import RegistrationBundle
 
     bundles: list[RegistrationBundle] = []
     for row in rows:
         try:
-            bundles.append(
-                RegistrationBundle(
-                    runtime=DynamicWorkflowAdapter(row, engine),
-                    parameters=_extract_parameters(row),
+            engine_name = str(row.get("engine") or "dynamic")
+            if engine_name == "skill":
+                bundles.append(
+                    RegistrationBundle(
+                        runtime=SkillWorkflowAdapter(row, skill_engine),
+                        parameters=extract_skill_parameters(row),
+                    )
                 )
-            )
+            elif engine_name == "dynamic":
+                bundles.append(
+                    RegistrationBundle(
+                        runtime=DynamicWorkflowAdapter(row, dynamic_engine),
+                        parameters=_extract_parameters(row),
+                    )
+                )
+            else:
+                logger.warning(
+                    "Skipping workflow '%s' with unknown engine '%s'",
+                    row.get("id", "?"),
+                    engine_name,
+                )
         except Exception:
             logger.warning(
                 "Skipping invalid workflow '%s'", row.get("id", "?"), exc_info=True,

@@ -655,6 +655,11 @@ pre {
   color: var(--yellow);
 }
 
+.badge-neutral {
+  background: rgba(139, 148, 158, 0.15);
+  color: var(--text-muted);
+}
+
 .steps-list {
   margin-top: 12px;
 }
@@ -945,7 +950,7 @@ details summary {
   flex: 1;
   padding: 24px;
   overflow-y: auto;
-  max-width: 1000px;
+  max-width: 1280px;
 }
 
 .wm-header {
@@ -1072,6 +1077,231 @@ details summary {
   display: flex;
   gap: 10px;
   margin-top: 16px;
+}
+
+.engine-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 16px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.engine-tab {
+  min-width: 110px;
+  padding: 8px 14px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.engine-tab-active {
+  color: var(--text);
+  background: var(--bg-card);
+  border-color: var(--border);
+}
+
+.cap-section {
+  margin-bottom: 16px;
+  padding: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.cap-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.cap-section-header h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.cap-param-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.cap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.skill-markdown {
+  width: 100%;
+  min-height: 360px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 14px;
+  resize: vertical;
+  outline: none;
+}
+
+.skill-markdown:focus {
+  border-color: var(--primary);
+}
+
+.composer {
+  margin-top: 4px;
+}
+
+.composer-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.composer-grid {
+  display: grid;
+  grid-template-columns: 220px minmax(360px, 1fr) 320px;
+  gap: 14px;
+  align-items: start;
+}
+
+.composer-steps,
+.composer-main,
+.composer-side {
+  min-height: 420px;
+}
+
+.composer-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.composer-step {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 4px 8px;
+  width: 100%;
+  padding: 10px;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.composer-step:hover,
+.composer-step-active {
+  border-color: var(--primary);
+}
+
+.composer-step span {
+  grid-row: span 2;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-input);
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.composer-step strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.composer-step small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.composer-panel {
+  padding: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.composer-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.composer-label {
+  display: block;
+  margin: 12px 0 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.composer-temp {
+  margin-top: 12px;
+}
+
+.composer-param,
+.composer-edge {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.composer-param {
+  grid-template-columns: 1fr 100px auto;
+}
+
+.composer-edge {
+  grid-template-columns: 1fr 1fr;
+}
+
+.composer-param input,
+.composer-param select,
+.composer-edge input,
+.composer-edge select,
+.composer-panel input,
+.composer-panel select {
+  min-width: 0;
+  padding: 7px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  outline: none;
+}
+
+.composer-param input:focus,
+.composer-param select:focus,
+.composer-edge input:focus,
+.composer-edge select:focus,
+.composer-panel input:focus,
+.composer-panel select:focus {
+  border-color: var(--primary);
+}
+
+@media (max-width: 1100px) {
+  .composer-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .wm-help {

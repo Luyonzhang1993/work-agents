@@ -7,7 +7,7 @@ cannot be deleted (they are re-seeded on restart).
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -27,6 +27,7 @@ class WorkflowDefinitionIn(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z0-9_-]+$")
     name: str = Field(min_length=1)
     description: str = ""
+    engine: Literal["skill", "dynamic"] = "skill"
     definition: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
 
@@ -34,6 +35,7 @@ class WorkflowDefinitionIn(BaseModel):
 class WorkflowDefinitionUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
+    engine: Literal["skill", "dynamic"] | None = None
     definition: dict[str, Any] | None = None
     enabled: bool | None = None
 
@@ -95,6 +97,7 @@ async def create_workflow(body: WorkflowDefinitionIn) -> dict[str, Any]:
             workflow_id=body.id,
             name=body.name,
             description=body.description,
+            engine=body.engine,
             definition=body.definition,
             enabled=body.enabled,
         )
@@ -122,6 +125,8 @@ async def update_workflow(
             updates["name"] = body.name
         if body.description is not None:
             updates["description"] = body.description
+        if body.engine is not None:
+            updates["engine"] = body.engine
         if body.definition is not None:
             updates["definition"] = body.definition
         if body.enabled is not None:
